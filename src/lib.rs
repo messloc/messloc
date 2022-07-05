@@ -1,14 +1,7 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+mod global;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+const PAGE_SIZE: usize = 4096;
+const DATA_LEN: usize = 128;
+const ARENA_SIZE: usize = PAGE_SIZE * 2;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub struct MiniHeap; // stub
