@@ -8,3 +8,6 @@ description = "Port of Mesh Allocator"
 
 [dependencies]
 arrayvec = "0.7"
+
+[features]
+allocator-api = []
