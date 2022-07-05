@@ -1,8 +1,8 @@
 use std::ptr::null_mut;
 
-use crate::PAGE_SIZE;
+use crate::{PAGE_SIZE, SPAN_CLASS_COUNT};
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 pub struct Span {
     offset: Offset,
     length: Length,
@@ -10,10 +10,32 @@ pub struct Span {
 pub type Offset = u32;
 pub type Length = u32;
 
+impl Span {
+    const fn class(self) -> u32 {
+        Length::min(self.length, SPAN_CLASS_COUNT as Length) - 1
+    }
+
+    fn split_after(&mut self, page_count: Length) -> Self {
+        debug_assert!(page_count <= self.length);
+        let rest_page_count = self.length - page_count;
+        self.length = page_count;
+        Span {
+            offset: self.offset + page_count,
+            length: rest_page_count,
+        }
+    }
+
+    fn is_empty(self) -> bool {
+        self.length == 0
+    }
+}
+
 pub type Page = [u8; PAGE_SIZE];
 
 pub struct MeshableArena {
     arena_begin: *mut Page,
+    dirty: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
+    clean: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
 }
 
 impl MeshableArena {
@@ -54,16 +76,15 @@ impl MeshableArena {
     }
 
     fn reserve_pages(&mut self, page_count: usize, page_align: usize) -> Span {
-        // d_assert(pageCount >= 1);
+        debug_assert!(page_count > 0);
 
-        // internal::PageType flags(internal::PageType::Unknown);
-        // Span result(0, 0);
-        // auto ok = findPages(pageCount, result, flags);
-        // if (!ok) {
-        //   expandArena(pageCount);
-        //   ok = findPages(pageCount, result, flags);
-        //   hard_assert(ok);
-        // }
+        let (result, flags) = match self.find_pages(page_count as u32) {
+            Some((span, flags)) => (span, flags),
+            None => {
+                self.expand_arena(page_count);
+                self.find_pages(page_count as u32).unwrap() // unchecked?
+            }
+        };
 
         // d_assert(!result.empty());
         // d_assert(flags != internal::PageType::Unknown);
@@ -92,7 +113,88 @@ impl MeshableArena {
         Span::default()
     }
 
-    //   inline void *ptrFromOffset(size_t off) const {
-    //     return reinterpret_cast<void *>(ptrvalFromOffset(off));
-    //   }
+    fn find_pages(&mut self, page_count: u32) -> Option<(Span, PageType)> {
+        // Search through all dirty spans first.  We don't worry about
+        // fragmenting dirty pages, as being able to reuse dirty pages means
+        // we don't increase RSS.
+        let span = Span {
+            offset: 0,
+            length: page_count,
+        };
+        for span_class in span.class()..SPAN_CLASS_COUNT {
+            if let Some(span) = Self::find_pages_inner(&mut self.dirty, span_class, page_count) {
+                return Some((span, PageType::Dirty));
+            }
+        }
+
+        // if no dirty pages are available, search clean pages.  An allocated
+        // clean page (once it is written to) means an increased RSS.
+        for span_class in span.class()..SPAN_CLASS_COUNT {
+            if let Some(span) = Self::find_pages_inner(&mut self.clean, span_class, page_count) {
+                return Some((span, PageType::Clean));
+            }
+        }
+
+        None
+    }
+
+    fn find_pages_inner(
+        free_spans: &mut [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
+        span_class: u32,
+        page_count: u32,
+    ) -> Option<Span> {
+        let spans = &mut free_spans[span_class as usize];
+        if spans.is_empty() {
+            return None;
+        }
+
+        let old_len = spans.len();
+
+        if span_class == SPAN_CLASS_COUNT - 1 && spans[spans.len() - 1].length < page_count {
+            // the final span class contains (and is the only class to
+            // contain) variable-size spans, so we need to make sure we
+            // search through all candidates in this case.
+            for j in 0..spans.len() - 1 {
+                if spans[j].length >= page_count {
+                    spans.swap(j, spans.len() - 1);
+                    break;
+                }
+            }
+
+            // check that we found something in the above loop. this would be
+            // our last loop iteration anyway
+            if spans[spans.len() - 1].length < page_count {
+                return None;
+            }
+        }
+
+        let span = spans.pop().unwrap();
+
+        // #ifndef NDEBUG
+        // d_assert_msg(oldLen == spanList.size() + 1, "pageCount:%zu,%zu -- %zu/%zu", pageCount, i, oldLen, spanList.size());
+        // for (size_t j = 0; j < spanList.size(); j++) {
+        // d_assert(spanList[j] != span);
+        // }
+        // #endif
+
+        // this invariant should be maintained
+        debug_assert!(span.length > span_class);
+        debug_assert!(span.length >= page_count);
+
+        // put the part we don't need back in the reuse pile
+        let rest = span.split_after(page_count);
+        if !rest.is_empty() {
+            free_spans[rest.class() as usize].push(rest);
+        }
+        debug_assert_eq!(span.length, page_count);
+
+        Some(span)
+    }
+}
+
+enum PageType {
+    Clean = 0,
+    Dirty = 1,
+    Meshed = 2,
+    Unknown = 3,
 }
