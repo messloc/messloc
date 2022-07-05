@@ -88,31 +88,33 @@ impl MeshableArena {
             }
         };
 
-        // d_assert(!result.empty());
-        // d_assert(flags != internal::PageType::Unknown);
+        debug_assert!(!result.is_empty());
+        debug_assert_ne!(flags, PageType::Unknown);
 
-        // if (unlikely(pageAlignment > 1 && ((ptrvalFromOffset(result.offset) / kPageSize) % pageAlignment != 0))) {
-        //   freeSpan(result, flags);
-        //   // recurse once, asking for enough extra space that we are sure to
-        //   // be able to find an aligned offset of pageCount pages within.
-        //   result = reservePages(pageCount + 2 * pageAlignment, 1);
+        let ptr = unsafe { self.arena_begin.add(result.offset as usize) };
+        if page_align > 1 && ptr.align_offset(page_align) != 0 {
+            todo!("page wasn't aligned")
 
-        //   const size_t alignment = pageAlignment * kPageSize;
-        //   const uintptr_t alignedPtr = (ptrvalFromOffset(result.offset) + alignment - 1) & ~(alignment - 1);
-        //   const auto alignedOff = offsetFor(reinterpret_cast<void *>(alignedPtr));
-        //   d_assert(alignedOff >= result.offset);
-        //   d_assert(alignedOff < result.offset + result.length);
-        //   const auto unwantedPageCount = alignedOff - result.offset;
-        //   auto alignedResult = result.splitAfter(unwantedPageCount);
-        //   d_assert(alignedResult.offset == alignedOff);
-        //   freeSpan(result, flags);
-        //   const auto excess = alignedResult.splitAfter(pageCount);
-        //   freeSpan(excess, flags);
-        //   result = alignedResult;
-        // }
+            // freeSpan(result, flags);
+            // // recurse once, asking for enough extra space that we are sure to
+            // // be able to find an aligned offset of pageCount pages within.
+            // result = reservePages(pageCount + 2 * pageAlignment, 1);
 
-        // return result;
-        Span::default()
+            // const size_t alignment = pageAlignment * kPageSize;
+            // const uintptr_t alignedPtr = (ptrvalFromOffset(result.offset) + alignment - 1) & ~(alignment - 1);
+            // const auto alignedOff = offsetFor(reinterpret_cast<void *>(alignedPtr));
+            // d_assert(alignedOff >= result.offset);
+            // d_assert(alignedOff < result.offset + result.length);
+            // const auto unwantedPageCount = alignedOff - result.offset;
+            // auto alignedResult = result.splitAfter(unwantedPageCount);
+            // d_assert(alignedResult.offset == alignedOff);
+            // freeSpan(result, flags);
+            // const auto excess = alignedResult.splitAfter(pageCount);
+            // freeSpan(excess, flags);
+            // result = alignedResult;
+        }
+
+        result
     }
 
     pub fn expand_arena(&mut self, min_pages_added: usize) {
@@ -215,6 +217,7 @@ impl MeshableArena {
     }
 }
 
+#[derive(PartialEq, Debug, Clone, Copy)]
 enum PageType {
     Clean = 0,
     Dirty = 1,
