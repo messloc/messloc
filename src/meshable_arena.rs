@@ -1,6 +1,6 @@
 use std::ptr::null_mut;
 
-use crate::{PAGE_SIZE, SPAN_CLASS_COUNT};
+use crate::{MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT};
 
 #[derive(Default, Clone, Copy)]
 pub struct Span {
@@ -11,8 +11,8 @@ pub type Offset = u32;
 pub type Length = u32;
 
 impl Span {
-    const fn class(self) -> u32 {
-        Length::min(self.length, SPAN_CLASS_COUNT as Length) - 1
+    fn class(self) -> u32 {
+        Length::min(self.length, SPAN_CLASS_COUNT) - 1
     }
 
     fn split_after(&mut self, page_count: Length) -> Self {
@@ -34,6 +34,8 @@ pub type Page = [u8; PAGE_SIZE];
 
 pub struct MeshableArena {
     arena_begin: *mut Page,
+    /// offset in pages
+    end: Offset,
     dirty: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
     clean: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
 }
@@ -113,6 +115,26 @@ impl MeshableArena {
         Span::default()
     }
 
+    pub fn expand_arena(&mut self, min_pages_added: usize) {
+        let page_count = usize::max(min_pages_added, MIN_ARENA_EXPANSION);
+
+        let expansion = Span {
+            offset: self.end,
+            length: page_count as u32,
+        };
+        self.end += page_count as u32;
+
+        //   if (unlikely(_end >= kArenaSize / kPageSize)) {
+        //     debug("Mesh: arena exhausted: current arena size is %.1f GB; recompile with larger arena size.",
+        //           kArenaSize / 1024.0 / 1024.0 / 1024.0);
+        //     abort();
+        //   }
+
+        self.clean[expansion.class() as usize].push(expansion)
+
+        //   _clean[expansion.spanClass()].push_back(expansion);
+    }
+
     fn find_pages(&mut self, page_count: u32) -> Option<(Span, PageType)> {
         // Search through all dirty spans first.  We don't worry about
         // fragmenting dirty pages, as being able to reuse dirty pages means
@@ -148,27 +170,28 @@ impl MeshableArena {
             return None;
         }
 
-        let old_len = spans.len();
+        // let old_len = spans.len();
+        let end = spans.len() - 1;
 
-        if span_class == SPAN_CLASS_COUNT - 1 && spans[spans.len() - 1].length < page_count {
+        if span_class == SPAN_CLASS_COUNT - 1 && spans[end].length < page_count {
             // the final span class contains (and is the only class to
             // contain) variable-size spans, so we need to make sure we
             // search through all candidates in this case.
-            for j in 0..spans.len() - 1 {
+            for j in 0..end {
                 if spans[j].length >= page_count {
-                    spans.swap(j, spans.len() - 1);
+                    spans.swap(j, end);
                     break;
                 }
             }
 
             // check that we found something in the above loop. this would be
             // our last loop iteration anyway
-            if spans[spans.len() - 1].length < page_count {
+            if spans[end].length < page_count {
                 return None;
             }
         }
 
-        let span = spans.pop().unwrap();
+        let mut span = spans.pop().unwrap();
 
         // #ifndef NDEBUG
         // d_assert_msg(oldLen == spanList.size() + 1, "pageCount:%zu,%zu -- %zu/%zu", pageCount, i, oldLen, spanList.size());
