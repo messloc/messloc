@@ -1,36 +1,9 @@
 use std::ptr::null_mut;
 
-use crate::{MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT};
-
-#[derive(Default, Clone, Copy)]
-pub struct Span {
-    offset: Offset,
-    length: Length,
-}
-pub type Offset = u32;
-pub type Length = u32;
-
-impl Span {
-    fn class(self) -> u32 {
-        Length::min(self.length, SPAN_CLASS_COUNT) - 1
-    }
-
-    fn split_after(&mut self, page_count: Length) -> Self {
-        debug_assert!(page_count <= self.length);
-        let rest_page_count = self.length - page_count;
-        self.length = page_count;
-        Span {
-            offset: self.offset + page_count,
-            length: rest_page_count,
-        }
-    }
-
-    fn is_empty(self) -> bool {
-        self.length == 0
-    }
-}
-
-pub type Page = [u8; PAGE_SIZE];
+use crate::{
+    consts::{MIN_ARENA_EXPANSION, SPAN_CLASS_COUNT},
+    types::{Page, Span},
+};
 
 pub struct MeshableArena {
     arena_begin: *mut Page,

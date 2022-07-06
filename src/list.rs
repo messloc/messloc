@@ -1,0 +1,1 @@
+pub const HEAD: MiniHeapId = MiniHeapId(u32::MAX);

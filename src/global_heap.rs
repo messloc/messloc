@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     meshable_arena::{MeshableArena, Span},
-    MiniHeap, PAGE_SIZE,
+    mini_heap::MiniHeap, consts::PAGE_SIZE,
 };
 
 pub struct GlobalHeapShared;

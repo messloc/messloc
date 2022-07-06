@@ -1,4 +1,3 @@
-
 #![cfg_attr(feature = "allocator-api", feature(allocator_api))]
 #![warn(
     rust_2018_idioms,
@@ -6,28 +5,27 @@
     // missing_docs,
 )]
 
-use std::{alloc::{GlobalAlloc, Layout}, ptr::NonNull};
+use std::{
+    alloc::{GlobalAlloc, Layout},
+    ptr::NonNull,
+};
 
 #[cfg(feature = "allocator-api")]
-use std::alloc::{Allocator, AllocError};
+use std::alloc::{AllocError, Allocator};
 
-mod global_heap;
+mod bitmap;
 mod cheap_heap;
+mod consts;
+mod global_heap;
 mod meshable_arena;
+mod mini_heap;
+mod rng;
+mod shuffle_vector;
+mod types;
+mod list;
+mod runtime;
 
-const PAGE_SIZE: usize = 4096;
-const DATA_LEN: usize = 128;
-const ARENA_SIZE: usize = PAGE_SIZE * 2;
-
-const SPAN_CLASS_COUNT: u32 = 256;
-const MIN_ARENA_EXPANSION: usize = 4096;  // 16 MB in pages
-
-pub struct MiniHeap; // stub
-
-
-pub struct Messloc {
-
-}
+pub struct Messloc {}
 
 impl Messloc {
     fn allocate(&self, layout: Layout) -> Option<NonNull<[u8]>> {
