@@ -3,6 +3,9 @@
 //!
 //! The author's orginal code was not used as reference for this implementation.
 
+pub mod shuffle_vec;
+use shuffle_vec::*;
+
 use std::ptr::NonNull;
 
 #[test]
@@ -11,7 +14,10 @@ fn basic_test() {
 
     println!("MiniHeap size: {}", std::mem::size_of::<MiniHeap>());
     println!("MiniHeap alignment: {}", std::mem::align_of::<MiniHeap>());
-    println!("MiniHeap unused bytes: {}", std::mem::size_of::<MiniHeap>() - 327);
+    println!(
+        "MiniHeap unused bytes: {}",
+        std::mem::size_of::<MiniHeap>() - 327
+    );
 
     panic!();
 }
@@ -37,25 +43,11 @@ struct MiniHeap {
     shuffle_vector: ShuffleVector<MAX_ALLOCATIONS_PER_SPAN>,
 
     /// Mask of the current allocations
-    allocation_mask: AllocationMask<{(MAX_ALLOCATIONS_PER_SPAN + 7) / 8}>,
-}
-
-struct ShuffleVector<const COUNT: usize> {
-    data: [u8; COUNT],
-    offset: u8,
-}
-
-impl<const COUNT: usize> ShuffleVector<COUNT> {
-    fn new<R: rand::Rng>(rng: &mut R) -> Self {
-        Self {
-            data: [(); COUNT].map(|_| 0),
-            offset: 0,
-        }
-    }
+    allocation_mask: AllocationMask<{ (MAX_ALLOCATIONS_PER_SPAN + 7) / 8 }>,
 }
 
 struct AllocationMask<const COUNT: usize> {
-    mask: [core::sync::atomic::AtomicU8; COUNT]
+    mask: [core::sync::atomic::AtomicU8; COUNT],
 }
 
 impl<const COUNT: usize> AllocationMask<COUNT> {

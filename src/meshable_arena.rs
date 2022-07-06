@@ -1,6 +1,6 @@
 use std::ptr::null_mut;
 
-use crate::{MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT, ARENA_SIZE, cheap_heap::CheapHeap};
+use crate::{cheap_heap::CheapHeap, ARENA_SIZE, MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT};
 
 #[derive(Default, Clone, Copy)]
 pub struct Span {
@@ -39,7 +39,7 @@ pub struct MeshableArena {
     dirty: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
     clean: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
 
-    pub(crate) mh_allocator: CheapHeap<64, {ARENA_SIZE / PAGE_SIZE}>,
+    pub(crate) mh_allocator: CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>,
 }
 
 impl MeshableArena {

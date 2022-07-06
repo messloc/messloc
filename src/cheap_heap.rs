@@ -1,4 +1,4 @@
-use std::{ptr::null_mut, mem::size_of};
+use std::{mem::size_of, ptr::null_mut};
 
 use crate::one_way_mmap_heap::OneWayMmapHeap;
 
@@ -22,7 +22,10 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_
             freelist_offset: 0,
         };
         this.arena = unsafe { this.malloc(ALLOC_SIZE * MAX_COUNT).cast() };
-        this.freelist = unsafe { this.malloc(MAX_COUNT * size_of::<*mut [u8; ALLOC_SIZE]>()).cast() };
+        this.freelist = unsafe {
+            this.malloc(MAX_COUNT * size_of::<*mut [u8; ALLOC_SIZE]>())
+                .cast()
+        };
         this
     }
 
