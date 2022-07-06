@@ -14,10 +14,11 @@ use std::alloc::{Allocator, AllocError};
 mod global_heap;
 mod cheap_heap;
 mod meshable_arena;
+mod one_way_mmap_heap;
 
 const PAGE_SIZE: usize = 4096;
 const DATA_LEN: usize = 128;
-const ARENA_SIZE: usize = PAGE_SIZE * 2;
+const ARENA_SIZE: usize = 64 * 1024 * 1024 * 1024; // 64 GB; // darwin should be 32 GB
 
 const SPAN_CLASS_COUNT: u32 = 256;
 const MIN_ARENA_EXPANSION: usize = 4096;  // 16 MB in pages

@@ -3,10 +3,7 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use crate::{
-    meshable_arena::{MeshableArena, Span},
-    MiniHeap, PAGE_SIZE,
-};
+use crate::{meshable_arena::MeshableArena, MiniHeap, PAGE_SIZE};
 
 pub struct GlobalHeapShared;
 pub struct GlobalHeapGuarded {
@@ -77,8 +74,8 @@ impl GlobalHeapLocked<'_> {
     ) -> *mut MiniHeap {
         debug_assert!(page_count > 0, "should allocate at least 1 page");
 
-        // void *buf = _mhAllocator.alloc();
-        // d_assert(buf != nullptr);
+        let buf = unsafe { self.guarded.arena.mh_allocator.alloc() };
+        debug_assert_ne!(buf, null_mut());
 
         // allocate out of the arena
         let (span, span_begin) = self.guarded.arena.page_alloc(page_count, page_align);
