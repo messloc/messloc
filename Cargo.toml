@@ -9,6 +9,8 @@ description = "Port of Mesh Allocator"
 [dependencies]
 arrayvec = "0.7"
 libc = "0.2.126"
+page_size = "0.4.2"
+rand = "0.8.5"
 
 [features]
 allocator-api = []

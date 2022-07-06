@@ -15,6 +15,7 @@ mod global_heap;
 mod cheap_heap;
 mod meshable_arena;
 mod one_way_mmap_heap;
+mod blind;
 
 const PAGE_SIZE: usize = 4096;
 const DATA_LEN: usize = 128;
