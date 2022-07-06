@@ -1,14 +1,12 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+mod global_heap;
+mod cheap_heap;
+mod meshable_arena;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+const PAGE_SIZE: usize = 4096;
+const DATA_LEN: usize = 128;
+const ARENA_SIZE: usize = PAGE_SIZE * 2;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+const SPAN_CLASS_COUNT: u32 = 256;
+const MIN_ARENA_EXPANSION: usize = 4096;  // 16 MB in pages
+
+pub struct MiniHeap; // stub
