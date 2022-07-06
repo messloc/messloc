@@ -15,15 +15,19 @@ mod global_heap;
 mod cheap_heap;
 mod meshable_arena;
 mod one_way_mmap_heap;
+mod mini_heap;
+mod atomic_bitmap;
+mod internal;
 
 const PAGE_SIZE: usize = 4096;
 const DATA_LEN: usize = 128;
-const ARENA_SIZE: usize = 64 * 1024 * 1024 * 1024; // 64 GB; // darwin should be 32 GB
+#[cfg(target_os = "linux")]
+const ARENA_SIZE: usize = 64 * 1024 * 1024 * 1024; // 64 GB
+#[cfg(target_os = "macos")]
+const ARENA_SIZE: usize = 32 * 1024 * 1024 * 1024; // 32 GB
 
 const SPAN_CLASS_COUNT: u32 = 256;
 const MIN_ARENA_EXPANSION: usize = 4096;  // 16 MB in pages
-
-pub struct MiniHeap; // stub
 
 
 pub struct Messloc {

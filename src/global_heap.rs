@@ -3,7 +3,7 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use crate::{meshable_arena::MeshableArena, MiniHeap, PAGE_SIZE};
+use crate::{meshable_arena::MeshableArena, PAGE_SIZE, mini_heap::MiniHeap};
 
 pub struct GlobalHeapShared;
 pub struct GlobalHeapGuarded {
