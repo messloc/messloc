@@ -1,7 +1,11 @@
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::{
+    ptr::null_mut,
+    sync::{Mutex, MutexGuard, PoisonError},
+};
 
 use crate::{
     cheap_heap::DynCheapHeap,
+    mmap_heap::MmapHeap,
     one_way_mmap_heap::{Heap, OneWayMmapHeap},
 };
 pub struct InternalHeap;
@@ -16,10 +20,6 @@ impl InternalHeap {
 }
 
 impl Heap for InternalHeap {
-    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
-        self.get().map(size, flags, fd)
-    }
-
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         self.get().malloc(size)
     }
@@ -40,12 +40,12 @@ const PARTITIONED_HEAP_SIZE_PER: usize = PARTITIONED_HEAP_ARENA_SIZE / PARTITION
 pub struct PartitionedHeap {
     small_arena: *mut u8,
     small_heaps: [DynCheapHeap; PARTITIONED_HEAP_BINS],
-    big_heap: (),
+    big_heap: MmapHeap,
 }
 unsafe impl Send for PartitionedHeap {}
 
 impl PartitionedHeap {
-    fn new() -> Self {
+    pub fn new() -> Self {
         let small_arena =
             unsafe { OneWayMmapHeap.malloc(PARTITIONED_HEAP_ARENA_SIZE) }.cast::<u8>();
         let freelist = unsafe { OneWayMmapHeap.malloc(PARTITIONED_HEAP_ARENA_SIZE) }.cast::<u8>();
@@ -64,25 +64,52 @@ impl PartitionedHeap {
         Self {
             small_arena,
             small_heaps,
-            big_heap: (),
+            big_heap: MmapHeap::default(),
         }
+    }
+
+    unsafe fn get_size_class(&self, ptr: *mut ()) -> usize {
+        let offset = ptr.cast::<u8>().offset_from(self.small_arena) as usize;
+        let size_class = offset / PARTITIONED_HEAP_SIZE_PER;
+        debug_assert!((0..PARTITIONED_HEAP_BINS).contains(&size_class));
+        size_class
+    }
+
+    unsafe fn contains(&self, ptr: *mut ()) -> bool {
+        (self.small_arena..self.small_arena.add(PARTITIONED_HEAP_ARENA_SIZE)).contains(&ptr.cast())
     }
 }
 
-impl crate::one_way_mmap_heap::Heap for PartitionedHeap {
-    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
-        todo!()
-    }
+pub const fn log2(x: usize) -> u32 {
+    usize::BITS - 1 - x.leading_zeros()
+}
 
+impl crate::one_way_mmap_heap::Heap for PartitionedHeap {
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
-        todo!()
+        let size_class = (log2(size.max(8)) - 3) as usize;
+
+        if size_class >= PARTITIONED_HEAP_BINS {
+            self.big_heap.malloc(size)
+        } else {
+            self.small_heaps[size_class].alloc().cast()
+        }
     }
 
     unsafe fn get_size(&mut self, ptr: *mut ()) -> usize {
-        todo!()
+        if !self.contains(ptr) {
+            self.big_heap.get_size(ptr)
+        } else {
+            let size_class = self.get_size_class(ptr);
+            8 << size_class
+        }
     }
 
     unsafe fn free(&mut self, ptr: *mut ()) {
-        todo!()
+        if !self.contains(ptr) {
+            self.big_heap.free(ptr)
+        } else {
+            let size_class = self.get_size_class(ptr);
+            self.small_heaps[size_class].free(ptr);
+        }
     }
 }

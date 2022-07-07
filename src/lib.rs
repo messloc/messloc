@@ -18,6 +18,7 @@ mod one_way_mmap_heap;
 mod mini_heap;
 mod atomic_bitmap;
 mod internal;
+mod mmap_heap;
 
 const PAGE_SIZE: usize = 4096;
 const DATA_LEN: usize = 128;

@@ -42,10 +42,6 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_
 }
 
 impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_SIZE, MAX_COUNT> {
-    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
-        OneWayMmapHeap.map(size, flags, fd)
-    }
-
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         OneWayMmapHeap.malloc(size)
     }
@@ -109,10 +105,6 @@ impl DynCheapHeap {
 }
 
 impl Heap for DynCheapHeap {
-    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
-        OneWayMmapHeap.map(size, flags, fd)
-    }
-
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         OneWayMmapHeap.malloc(size)
     }
