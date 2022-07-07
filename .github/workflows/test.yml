@@ -1,15 +1,17 @@
-name: Test
+name: GitHub Actions Demo
 on: [push]
 jobs:
-  explore-test:
+  Explore-GitHub-Actions:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Job triggered due to event: ${{ github.event_name }}"
-      - run: echo "Job is running on ${{ runner.os }}"
-      - run: echo "Branch name: ${{ github.ref }}, Repo name: ${{ github.repository }}"
-      - name: Copy code to VM
+      - run: echo "Job triggered due to event"
+      - run: echo "Job is now running on ${{ runner.os }}"
+      - run: echo "Branch is ${{ github.ref }}, Repo is ${{ github.repository }}."
+      - name: Check out repository code
         uses: actions/checkout@v3
-      - run: echo "Job has cloned the code succesfully."
+      - run: echo "Repo ${{ github.repository }} cloned to VM"
+      - run: echo "Job is ready for testing."
       - name: Run cargo check
-      - run: cargo check
-      - run: echo "Job Status: ${{ job.status }}"
+        run: cargo check
+      - run: echo "job's status is ${{ job.status }}."
+
