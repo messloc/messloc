@@ -9,6 +9,7 @@ description = "Port of Mesh Allocator"
 [dependencies]
 arrayvec = "0.7"
 libc = "0.2.126"
+lazy_static = "1"
 
 [features]
 allocator-api = []

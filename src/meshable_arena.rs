@@ -1,11 +1,11 @@
-use std::ptr::null_mut;
+use std::{ptr::null_mut, sync::atomic::{AtomicU32, Ordering::Release}};
 
 use crate::{MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT, ARENA_SIZE, cheap_heap::CheapHeap};
 
 #[derive(Default, Clone, Copy)]
 pub struct Span {
-    offset: Offset,
-    length: Length,
+    pub offset: Offset,
+    pub length: Length,
 }
 pub type Offset = u32;
 pub type Length = u32;
@@ -33,11 +33,12 @@ impl Span {
 pub type Page = [u8; PAGE_SIZE];
 
 pub struct MeshableArena {
-    arena_begin: *mut Page,
+    pub(crate) arena_begin: *mut Page,
     /// offset in pages
     end: Offset,
     dirty: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
     clean: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
+    mh_index: *mut AtomicU32,
 
     pub(crate) mh_allocator: CheapHeap<64, {ARENA_SIZE / PAGE_SIZE}>,
 }
@@ -216,6 +217,16 @@ impl MeshableArena {
         debug_assert_eq!(span.length, page_count);
 
         Some(span)
+    }
+
+    pub unsafe fn track_miniheap(&mut self, span: Span, id: u32) {
+        for i in 0..span.length {
+            self.set_index((span.offset + i) as usize, id)
+        }
+    }
+
+    pub unsafe fn set_index(&mut self, offset: usize, id: u32) {
+        (&*self.mh_index.add(offset)).store(id, Release);
     }
 }
 
