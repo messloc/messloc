@@ -43,7 +43,41 @@ pub struct MeshableArena {
     pub(crate) mh_allocator: CheapHeap<64, {ARENA_SIZE / PAGE_SIZE}>,
 }
 
+// Safety: TODO
+unsafe impl Send for MeshableArena {}
+
 impl MeshableArena {
+    pub fn new() -> Self {
+        // d_assert(arenaInstance == nullptr);
+        // arenaInstance = this;
+
+        // int fd = -1;
+        // if (kMeshingEnabled) {
+        //   fd = openSpanFile(kArenaSize);
+        //   if (fd < 0) {
+        //     debug("mesh: opening arena file failed.\n");
+        //     abort();
+        //   }
+        // }
+        // _fd = fd;
+        // _arenaBegin = SuperHeap::map(kArenaSize, kMapShared, fd);
+        // _mhIndex = reinterpret_cast<atomic<MiniHeapID> *>(SuperHeap::malloc(indexSize()));
+      
+        // hard_assert(_arenaBegin != nullptr);
+        // hard_assert(_mhIndex != nullptr);
+
+        // if (kAdviseDump) {
+        //   madvise(_arenaBegin, kArenaSize, MADV_DONTDUMP);
+        // }
+      
+        // // debug("MeshableArena(%p): fd:%4d\t%p-%p\n", this, fd, _arenaBegin, arenaEnd());
+      
+        // // TODO: move this to runtime
+        // atexit(staticAtExit);
+        // pthread_atfork(staticPrepareForFork, staticAfterForkParent, staticAfterForkChild);
+        todo!()
+    }
+
     pub fn page_alloc(&mut self, page_count: usize, page_align: usize) -> (Span, *mut Page) {
         if page_count == 0 {
             return (Span::default(), null_mut());
