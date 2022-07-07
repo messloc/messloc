@@ -1,0 +1,15 @@
+name: Test
+on: [push]
+jobs:
+  explore-test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Job triggered due to event: ${{ github.event_name }}"
+      - run: echo "Job is running on ${{ runner.os }}"
+      - run: echo "Branch name: ${{ github.ref }}, Repo name: ${{ github.repository }}"
+      - name: Copy code to VM
+        uses: actions/checkout@v3
+      - run: echo "Job has cloned the code succesfully."
+      - name: Run cargo check
+      - run: cargo check
+      - run: echo "Job Status: ${{ job.status }}"
