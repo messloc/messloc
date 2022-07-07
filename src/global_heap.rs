@@ -4,8 +4,12 @@ use std::{
     sync::{atomic::AtomicUsize, Mutex, MutexGuard, PoisonError},
 };
 
-use crate::{meshable_arena::MeshableArena, mini_heap::MiniHeap, PAGE_SIZE};
+use crate::{
+    meshable_arena::MeshableArena, mini_heap::MiniHeap, 
+    PAGE_SIZE,
+};
 
+#[derive(Default)]
 pub struct GlobalHeapStats {
     mesh_count: AtomicUsize,
     free_count: usize,
@@ -13,7 +17,9 @@ pub struct GlobalHeapStats {
     high_water_mark: usize,
 }
 
-pub struct GlobalHeapShared;
+pub struct GlobalHeapShared {
+    max_object_size: usize,
+}
 pub struct GlobalHeapGuarded {
     arena: MeshableArena,
     miniheap_count: usize,
@@ -36,6 +42,19 @@ const fn page_count(bytes: usize) -> usize {
 }
 
 impl GlobalHeap {
+    pub fn new() -> Self {
+        Self {
+            shared: GlobalHeapShared {
+                max_object_size: 16384,
+            },
+            guarded: Mutex::new(GlobalHeapGuarded {
+                arena: MeshableArena::new(),
+                miniheap_count: 0,
+                stats: Default::default(),
+            }),
+        }
+    }
+
     /// Lock access to the GlobalHeap
     pub fn lock(&self) -> GlobalHeapLocked<'_> {
         let guarded = self.guarded.lock().unwrap_or_else(PoisonError::into_inner);
