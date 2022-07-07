@@ -1,21 +1,31 @@
 use std::{
+    mem::size_of,
     ptr::{null, null_mut},
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{atomic::AtomicUsize, Mutex, MutexGuard, PoisonError},
 };
 
-use crate::{meshable_arena::MeshableArena, PAGE_SIZE, mini_heap::MiniHeap};
+use crate::{meshable_arena::MeshableArena, mini_heap::MiniHeap, PAGE_SIZE};
+
+pub struct GlobalHeapStats {
+    mesh_count: AtomicUsize,
+    free_count: usize,
+    alloc_count: usize,
+    high_water_mark: usize,
+}
 
 pub struct GlobalHeapShared;
 pub struct GlobalHeapGuarded {
     arena: MeshableArena,
+    miniheap_count: usize,
+    stats: GlobalHeapStats,
 }
 pub struct GlobalHeap {
     shared: GlobalHeapShared,
     guarded: Mutex<GlobalHeapGuarded>,
 }
-pub struct GlobalHeapLocked<'a> {
-    shared: &'a GlobalHeapShared,
-    guarded: MutexGuard<'a, GlobalHeapGuarded>,
+pub struct GlobalHeapLocked<'lock> {
+    shared: &'lock GlobalHeapShared,
+    guarded: MutexGuard<'lock, GlobalHeapGuarded>,
 }
 
 /// Returns the minimum number of pages needed to
@@ -51,22 +61,19 @@ impl GlobalHeap {
 
         let mut lock = self.lock();
 
-        let miniheap = lock.alloc_miniheap(-1, page_count, 1, page_count * PAGE_SIZE, page_align);
+        let miniheap = lock.alloc_miniheap(page_count, 1, page_count * PAGE_SIZE, page_align);
 
         //   d_assert(mh->isLargeAlloc());
         //   d_assert(mh->spanSize() == pageCount * kPageSize);
         //   // d_assert(mh->objectSize() == pageCount * kPageSize);
 
-        //   void *ptr = mh->mallocAt(arenaBegin(), 0);
-
-        null()
+        unsafe { (*miniheap).malloc_at(lock.guarded.arena.arena_begin, 0) }
     }
 }
 
 impl GlobalHeapLocked<'_> {
     fn alloc_miniheap(
         &mut self,
-        size_class: i32,
         page_count: usize,
         object_count: usize,
         object_size: usize,
@@ -89,19 +96,22 @@ impl GlobalHeapLocked<'_> {
             "arena allocation unaligned"
         );
 
-        // MiniHeap *mh = new (buf) MiniHeap(arenaBegin(), span, objectCount, objectSize);
+        debug_assert!(size_of::<MiniHeap>() <= 64);
+        let mh = buf.cast();
+        unsafe { MiniHeap::new_inplace(mh, span, object_count, object_size) }
 
-        // const auto miniheapID = MiniHeapID{_mhAllocator.offsetFor(buf)};
-        // Super::trackMiniHeap(span, miniheapID);
+        let id = unsafe { self.guarded.arena.mh_allocator.offset_for(buf) };
+        unsafe { self.guarded.arena.track_miniheap(span, id) };
 
         // // mesh::debug("%p (%u) created!\n", mh, GetMiniHeapID(mh));
 
-        // _miniheapCount++;
-        // _stats.mhAllocCount++;
-        // _stats.mhHighWaterMark = max(_miniheapCount, _stats.mhHighWaterMark);
+        self.guarded.miniheap_count += 1;
+        self.guarded.stats.alloc_count += 1;
+        self.guarded.stats.high_water_mark = self
+            .guarded
+            .miniheap_count
+            .max(self.guarded.stats.high_water_mark);
 
-        // return mh;
-
-        null_mut()
+        mh
     }
 }

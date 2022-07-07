@@ -39,6 +39,10 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_
     fn arena_end(&self) -> *mut [u8; ALLOC_SIZE] {
         unsafe { self.arena.add(MAX_COUNT) }
     }
+
+    pub unsafe fn offset_for(&self, ptr: *mut [u8; ALLOC_SIZE]) -> u32 {
+        ptr.offset_from(self.arena) as u32
+    }
 }
 
 impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_SIZE, MAX_COUNT> {

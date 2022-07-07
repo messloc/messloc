@@ -1,7 +1,4 @@
-use std::{
-    ptr::null_mut,
-    sync::{Mutex, MutexGuard, PoisonError},
-};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::{
     cheap_heap::DynCheapHeap,
@@ -9,13 +6,17 @@ use crate::{
     one_way_mmap_heap::{Heap, OneWayMmapHeap},
 };
 pub struct InternalHeap;
-lazy_static::lazy_static! {
-    static ref HEAP: Mutex<PartitionedHeap> = Mutex::new(PartitionedHeap::new());
-}
 
 impl InternalHeap {
     fn get(&mut self) -> MutexGuard<'_, PartitionedHeap> {
-        HEAP.lock().unwrap_or_else(PoisonError::into_inner)
+        use lazy_static::lazy::Lazy;
+        fn init() -> Mutex<PartitionedHeap> {
+            Mutex::new(PartitionedHeap::new())
+        }
+        static LAZY: Lazy<Mutex<PartitionedHeap>> = Lazy::INIT;
+        LAZY.get(init)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 

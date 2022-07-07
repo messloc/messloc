@@ -38,4 +38,15 @@ impl AtomicBitmap256 {
         let old_value = self.bits[item as usize].fetch_and(!mask, Release);
         (old_value & mask) == 0
     }
+
+    pub fn try_to_set(&self, index: u64) -> bool {
+        let (item, position) = Self::compute_item_position(index);
+        self.set_at(item, position)
+    }
+
+    fn compute_item_position(index: u64) -> (u32, u32) {
+        let item = index >> 6;
+        let position = index & (64 - 1);
+        (item as u32, position as u32)
+    }
 }
