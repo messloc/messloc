@@ -82,7 +82,12 @@ pub struct DynCheapHeap {
 }
 
 impl DynCheapHeap {
-    pub fn new(alloc_size: usize, max_count: usize, arena: *mut u8, freelist: *mut *mut u8) -> Self {
+    pub fn new(
+        alloc_size: usize,
+        max_count: usize,
+        arena: *mut u8,
+        freelist: *mut *mut u8,
+    ) -> Self {
         DynCheapHeap {
             arena,
             freelist,

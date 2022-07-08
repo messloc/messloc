@@ -1,4 +1,4 @@
-use libc::{MAP_PRIVATE, MAP_ANONYMOUS, munmap};
+use libc::{munmap, MAP_ANONYMOUS, MAP_PRIVATE};
 
 use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 
@@ -20,12 +20,16 @@ impl Heap for MmapHeap {
 
     // TODO: use layout in this method to let us not need to lookup the size
     unsafe fn free(&mut self, ptr: *mut ()) {
-        let (i, _) = self.map.iter().enumerate().find(|(_, (p, _))| *p == ptr).unwrap();
+        let (i, _) = self
+            .map
+            .iter()
+            .enumerate()
+            .find(|(_, (p, _))| *p == ptr)
+            .unwrap();
         let (_, size) = self.map.swap_remove(i);
         munmap(ptr.cast(), size);
     }
 }
-
 
 // // MmapHeap extends OneWayMmapHeap to track allocated address space
 // // and will free memory with calls to munmap.

@@ -1,6 +1,8 @@
-use std::{ptr::null_mut, sync::atomic::{AtomicU32, Ordering::Release}};
-
-use crate::{MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT, ARENA_SIZE, cheap_heap::CheapHeap};
+use crate::{cheap_heap::CheapHeap, ARENA_SIZE, MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT};
+use std::{
+    ptr::null_mut,
+    sync::atomic::{AtomicU32, Ordering::Release},
+};
 
 #[derive(Default, Clone, Copy)]
 pub struct Span {
@@ -11,6 +13,10 @@ pub type Offset = u32;
 pub type Length = u32;
 
 impl Span {
+    fn new(offset: u32, length: u32) -> Span {
+        Span { offset, length }
+    }
+
     fn class(self) -> u32 {
         Length::min(self.length, SPAN_CLASS_COUNT) - 1
     }
@@ -32,18 +38,30 @@ impl Span {
 
 pub type Page = [u8; PAGE_SIZE];
 
+//FIXME: Move
+pub struct MeshedBitmap {}
+
 pub struct MeshableArena {
     pub(crate) arena_begin: *mut Page,
+    fd: usize,
     /// offset in pages
     end: Offset,
     dirty: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
     clean: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
     mh_index: *mut AtomicU32,
-
-    pub(crate) mh_allocator: CheapHeap<64, {ARENA_SIZE / PAGE_SIZE}>,
+    pub(crate) mh_allocator: CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>,
+    meshed_bitmap: MeshedBitmap,
+    freed_spans: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
+    dirty_page_threshold: usize,
+    meshed_page_count_hwm: usize,
 }
 
 impl MeshableArena {
+    pub fn new() -> MeshableArena {
+        //TODO: initialise stuff from the constructor
+        todo!()
+    }
+
     pub fn page_alloc(&mut self, page_count: usize, page_align: usize) -> (Span, *mut Page) {
         if page_count == 0 {
             return (Span::default(), null_mut());
@@ -205,7 +223,7 @@ impl MeshableArena {
         // }
         // #endif
 
-        // this invariant should be maintained
+        // invariant should be maintained
         debug_assert!(span.length > span_class);
         debug_assert!(span.length >= page_count);
 
@@ -227,6 +245,72 @@ impl MeshableArena {
 
     pub unsafe fn set_index(&mut self, offset: usize, id: u32) {
         (&*self.mh_index.add(offset)).store(id, Release);
+    }
+
+    fn scavenge(&self, force: bool) {
+        if force && self.dirty.len() < self.dirty_page_threshold {
+            let mut bitmap = Bitmap::new();
+            bitmap.invert();
+
+            self.freed_spans.iter().for_each(|span_list| {
+                span_list.iter().enumerate().for_each(|(key, span)| {
+                    self.meshed_bitmap.unset(span.offset + key);
+                    self.mark_pages(span);
+                    self.meshed_bitmap.reset_span_mapping(span);
+                })
+            });
+
+            self.freed_spans.clear();
+
+            let page_count = self.mashed_bitmap.in_use_count();
+            if page_count > self.meshed_page_count_hwm {
+                self.meshed_page_count_hwm = page_count;
+            }
+
+            for_each_free(self.dirty, |span| {
+                let size = span.byte_length();
+                self.free_physical(span.offset as usize, size);
+                self.mark_pages(span);
+            });
+
+            self.dirty.clear();
+            self.clean.clear();
+
+            self.coalesce(bitmap);
+        }
+    }
+
+    fn coalesce(&self, bitmap: Bitmap) {
+        let current = Span::default();
+        for i in bitmap.iter() {
+            if i == current.offset + current.length {
+                current.length += 1;
+                continue;
+            }
+
+            if !current.is_empty() {
+                self.clean
+                    .get_mut(current.class() as usize)
+                    .unwrap()
+                    .push(current);
+            }
+
+            current = Span::new(i, 1);
+        }
+    }
+
+    fn free_physical(&self, offset: usize, size: usize) {
+        let ptr = unsafe { self.arena_begin.add(offset) };
+
+        assert!(size / crate::PAGE_SIZE > 0);
+        assert!(size % crate::PAGE_SIZE > 0);
+
+        //TODO:: add check for if meshing is enabled or not
+        let _ = fallocate(self.fd, offset, size);
+    }
+
+    fn mark_pages(&self, span: Span) {
+        todo!()
     }
 }
 
