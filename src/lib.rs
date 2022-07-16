@@ -13,7 +13,7 @@ use std::{
 #[cfg(feature = "allocator-api")]
 use std::alloc::{AllocError, Allocator};
 
-mod blind;
+pub mod blind;
 mod cheap_heap;
 mod global_heap;
 mod meshable_arena;

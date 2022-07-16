@@ -1,79 +1,126 @@
-use std::ptr::NonNull;
+use std::{marker::PhantomData, ptr::NonNull};
 
+/// A span of continuous pages.
+///
+/// If this value is dropped without explicitly deallocating, then the pages **will** be leaked.
 #[derive(Debug)]
-pub struct Span {
-    /// Span of pages this heap manages.
+pub struct Span<H> {
+    /// Span of pages this span manages.
     data: NonNull<u8>,
 
-    /// Length of the span's allocation in system pages.
-    length: u32,
+    /// Length of the span's allocation in pages.
+    pages: u16,
 
-    /// Size of allocations stored (max 16K)
-    size_class: u16,
+    /// Extra handle for allocator to use.
+    handle: H,
 
-    /// Length of the span in number of allocations
-    max_allocations: u8,
+    /// State of the span.
+    state: State,
 }
 
-impl Span {
-    pub fn memory_usage(&self) -> usize {
-        self.length as usize * page_size::get()
-    }
+// TODO: add this to the span allocator's safety requirements
+unsafe impl<H> Send for Span<H> {}
 
-    pub fn max_allowed_allocations(&self) -> u8 {
-        self.max_allocations
-    }
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum State {
+    /// Span is normally allocated.
+    Normal,
 
-    pub fn size_class(&self) -> u16 {
-        self.size_class
-    }
+    /// Span has been merged with another span.
+    Merged,
+}
 
-    pub fn span_length(&self) -> usize {
-        self.max_allocations as usize * self.size_class as usize
-    }
-
-    pub fn assign_size_class(mut self, size_class: u16, alignment: u16) -> Self {
-        let size_class = ((size_class + alignment + 1) / alignment) * alignment;
-
-        self.size_class = size_class;
-
-        let mut num_allocations = (self.length as usize * page_size::get()) / size_class as usize;
-        self.max_allocations = if num_allocations > u8::MAX as usize {
-            u8::MAX
-        } else {
-            num_allocations as u8
-        };
-
-        self
-    }
-
-    pub fn pointer_to(&mut self, offset: u8) -> Option<NonNull<u8>> {
-        if offset >= self.max_allocations {
-            return None;
+impl<H> Span<H> {
+    /// # Safety
+    /// - `data` must be valid for `'a`.
+    pub unsafe fn new(data: NonNull<u8>, handle: H, pages: u16) -> Self {
+        Self {
+            data,
+            handle,
+            pages,
+            state: State::Normal,
         }
+    }
 
+    pub fn data_ptr(&self) -> NonNull<u8> {
+        self.data
+    }
 
+    pub fn pages(&self) -> u16 {
+        self.pages
+    }
 
-        // SAFETY:
-        // - The starting pointer is valid (make new unsafe) and the offset is in the same allocated
-        //   object.
-        // - The offset is a u8 so will not overflow a isize (what about a self.data at the end of
-        //   memory? condition on the new method)
-        // - The offset will not wrap the memory space.
-        unsafe {
-            Some(NonNull::new(self.data.as_ptr().offset(offset as isize * self.size_class as isize)).unwrap())
-        }
+    pub fn state(&self) -> State {
+        self.state
+    }
+
+    pub fn set_state(&mut self, state: State) {
+        self.state = state;
+    }
+
+    pub fn set_handle(&mut self, handle: H) {
+        self.handle = handle;
+    }
+
+    pub fn handle(&self) -> &H {
+        &self.handle
     }
 }
 
-pub trait SpanAllocator {
-    fn allocate_span(&mut self, pages: u32) -> Span;
+/// Trait for type that can allocate spans of pages.
+///
+/// # Safety
+/// - The value returned by `page_size` **cannot** change during the lifetime of an instance.
+///     It is allowed to be different between instances.
+pub unsafe trait SpanAllocator {
+    type AllocError;
+    type DeallocError;
+    type MergeError;
+    type Handle;
+
+    /// Size of allocator's pages in bytes.
+    fn page_size(&self) -> usize;
+
+    /// Allocate a set of pages to form a span.
+    ///
+    /// # Safety
+    /// - The returned span **cannot** be used after this instance is dropped.
+    unsafe fn allocate_span(&mut self, pages: u16) -> Result<Span<Self::Handle>, Self::AllocError>;
+
+    /// Deallocate a span.
+    ///
+    /// # Safety
+    /// - The passed `span` **must** have been allocated by this instance.
+    /// - **No** pointers/references into the span's pages will be dereferenced after this call.
+    unsafe fn deallocate_span(&mut self, span: Span<Self::Handle>) -> Result<(), Self::DeallocError>;
+
+    /// Merge two spans together.
+    ///
+    /// If successful, `span_to_merge`'s status will be updated.
+    ///
+    /// # Safety
+    /// - `span` and `span_to_merge` are of the **same** length.
+    /// - `span` and `span_to_merge` **must** have no overlapping active values.
+    unsafe fn merge_spans(
+        &mut self,
+        span: &Span<Self::Handle>,
+        span_to_merge: &mut Span<Self::Handle>,
+    ) -> Result<(), Self::MergeError>;
 }
 
 pub struct TestSpanAllocator;
 
-impl SpanAllocator for TestSpanAllocator {
-    fn allocate_span(&mut self, pages: u32) -> Span {
+unsafe impl SpanAllocator for TestSpanAllocator {
+    type AllocError = ();
+    type DeallocError = ();
+    type MergeError = ();
+    type Handle = ();
+
+    fn page_size(&self) -> usize {
+        256
+    }
+
+    unsafe fn allocate_span(&mut self, pages: u16) -> Result<Span<Self::Handle>, ()> {
         let data = vec![0u8; pages as usize * page_size::get()];
         let data = data.into_boxed_slice();
         let data = Box::into_raw(data);
@@ -82,11 +129,22 @@ impl SpanAllocator for TestSpanAllocator {
 
         eprintln!("Allocated pages: {}", pages);
 
-        Span {
-            data,
-            max_allocations: 0,
-            size_class: 0,
-            length: pages,
-        }
+        Ok(unsafe { Span::new(data, (), pages) })
+    }
+
+    unsafe fn deallocate_span(&mut self, span: Span<Self::Handle>) -> Result<(), ()> {
+        Box::from_raw(span.data.as_ptr());
+
+        eprintln!("Deallocated pages: {}", span.pages());
+
+        Ok(())
+    }
+
+    unsafe fn merge_spans(
+        &mut self,
+        span: &Span<Self::Handle>,
+        span_to_merge: &mut Span<Self::Handle>,
+    ) -> Result<(), ()> {
+        Err(())
     }
 }

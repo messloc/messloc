@@ -51,14 +51,9 @@ impl MiniHeap {
 
 #[test]
 fn basic_test() {
-    println!("System page size: {}", page_size::get());
+    use std::mem::*;
 
-    println!("MiniHeap size: {}", std::mem::size_of::<MiniHeap>());
-    println!("MiniHeap alignment: {}", std::mem::align_of::<MiniHeap>());
-    println!(
-        "MiniHeap unused bytes: {}",
-        std::mem::size_of::<MiniHeap>() - 327
-    );
-
-    panic!();
+    assert_eq!(size_of::<MiniHeap>(), 328);
+    assert_eq!(size_of::<Option<MiniHeap>>(), 328);
+    assert_eq!(align_of::<MiniHeap>(), 8);
 }

@@ -1,12 +1,10 @@
-use std::{ptr::NonNull, mem::MaybeUninit, alloc::Layout};
+use std::{alloc::Layout, mem::MaybeUninit, ptr::NonNull};
 
 use crate::blind::span::TestSpanAllocator;
 
 use super::MiniHeap;
 
 use super::span::SpanAllocator;
-
-
 
 #[derive(Debug)]
 enum Nested {
@@ -42,13 +40,15 @@ impl LinkedMiniHeap {
         }
     }
 
-    fn alloc<T: SpanAllocator, R: rand::Rng>(&mut self, layout: Layout, span_alloc: &mut T, rng: &mut R) -> NonNull<u8> {
+    fn alloc<T: SpanAllocator, R: rand::Rng>(
+        &mut self,
+        layout: Layout,
+        span_alloc: &mut T,
+        rng: &mut R,
+    ) -> NonNull<u8> {
         assert!(layout.size() <= self.storage.span().size_class() as usize);
         // check if there is space in the local heap
-        if let Some(pointer) = self
-            .storage
-            .alloc(layout)
-        {
+        if let Some(pointer) = self.storage.alloc(layout) {
             pointer
         } else {
             // the current heap doesn't have any more room
@@ -59,7 +59,7 @@ impl LinkedMiniHeap {
                 Nested::Reserved(mut pointer) => {
                     let node = LinkedMiniHeap::new(span_alloc, rng);
                     unsafe { pointer.as_mut() }.write(node);
-                    let mut pointer : NonNull<LinkedMiniHeap> = pointer.cast();
+                    let mut pointer: NonNull<LinkedMiniHeap> = pointer.cast();
                     self.next = Nested::Exists(pointer);
                     unsafe { pointer.as_mut() }.alloc(layout, span_alloc, rng)
                 }
@@ -98,11 +98,12 @@ pub struct LinkedList<T> {
     head: Option<NonNull<Node<T>>>,
 }
 
-impl<T> core::fmt::Debug for LinkedList<T> where T: core::fmt::Debug {
+impl<T> core::fmt::Debug for LinkedList<T>
+where
+    T: core::fmt::Debug,
+{
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_list()
-            .entries(self.iter())
-            .finish()
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -115,16 +116,29 @@ impl<T> LinkedList<T> {
     }
 
     pub fn iter<'a>(&'a self) -> LinkedListIter<'a, T> {
-        LinkedListIter { next: self.head.clone(), phantom: core::marker::PhantomData }
+        LinkedListIter {
+            next: self.head.clone(),
+            phantom: core::marker::PhantomData,
+        }
     }
 
-    pub fn push<S: SpanAllocator, R: rand::Rng>(&mut self, value: T, span_alloc: &mut S, rng: &mut R) {
-        let mut pointer: NonNull<MaybeUninit<Node<T>>> = self.storage.alloc(Layout::new::<Node<T>>(), span_alloc, rng).cast();
+    pub fn push<S: SpanAllocator, R: rand::Rng>(
+        &mut self,
+        value: T,
+        span_alloc: &mut S,
+        rng: &mut R,
+    ) {
+        let mut pointer: NonNull<MaybeUninit<Node<T>>> = self
+            .storage
+            .alloc(Layout::new::<Node<T>>(), span_alloc, rng)
+            .cast();
         assert_eq!(pointer.as_ptr() as usize % core::mem::align_of::<T>(), 0);
-        unsafe { pointer.as_mut().write(Node {
-            next: self.head,
-            value,
-        }) };
+        unsafe {
+            pointer.as_mut().write(Node {
+                next: self.head,
+                value,
+            })
+        };
         self.head = Some(pointer.cast())
     }
 }
@@ -132,7 +146,7 @@ impl<T> LinkedList<T> {
 #[derive(Debug)]
 pub struct LinkedListIter<'a, T> {
     phantom: core::marker::PhantomData<&'a LinkedMiniHeap>,
-    next: Option<NonNull<Node<T>>>
+    next: Option<NonNull<Node<T>>>,
 }
 
 impl<'a, T: 'a> Iterator for LinkedListIter<'a, T> {
@@ -153,12 +167,12 @@ fn test_list() {
     let mut rng = rand::thread_rng();
     let mut span_alloc = TestSpanAllocator;
     let mut list: LinkedList<u32> = LinkedList::new(&mut span_alloc, &mut rng);
-    
+
     for i in 0..100 {
         list.push(i, &mut span_alloc, &mut rng);
     }
 
-    dbg!(list);
-
-    panic!();
+    for (x, &y) in (0..100).rev().zip(list.iter()) {
+        assert_eq!(x, y);
+    }
 }
