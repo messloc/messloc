@@ -3,12 +3,12 @@ use std::{
     sync::atomic::{
         AtomicU32,
         Ordering::{Relaxed, Release, SeqCst},
-    },
+    }
 };
 
 use crate::{
     atomic_bitmap::AtomicBitmap256, class_array::class_array, meshable_arena::Span, MAX_SMALL_SIZE,
-    PAGE_SIZE,
+    ARENA_SIZE, PAGE_SIZE
 };
 
 pub struct MiniHeap {
@@ -173,6 +173,31 @@ impl Flags {
     }
 }
 
+#[derive(Clone, Debug, Copy)]
+pub struct MiniHeapId(pub u32);
+
+impl MiniHeapId {
+    
+}
+
+// FIXME:: replace this with MiniHeapId and make it atomic if all usages of MiniHeapId are atomic
+// FIXME:: consider whether we need to multiply the array size by size of usize
+#[derive(Debug)]
+pub struct AtomicMiniHeapId([AtomicU32; ARENA_SIZE / PAGE_SIZE]);
+
+impl AtomicMiniHeapId {
+
+    pub fn get(&self, index: usize) -> Option<&AtomicU32> {
+        self.0.get(index)
+    }
+
+}   
+
+impl Default for AtomicMiniHeapId {
+    fn default() -> Self {
+        todo!()
+    }
+}
 // class Flags {
 //     private:
 //       DISALLOW_COPY_AND_ASSIGN(Flags);

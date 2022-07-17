@@ -22,6 +22,7 @@ mod meshable_arena;
 mod mini_heap;
 mod mmap_heap;
 mod one_way_mmap_heap;
+mod utils;
 
 const PAGE_SIZE: usize = 4096;
 const DATA_LEN: usize = 128;
@@ -33,6 +34,7 @@ const ARENA_SIZE: usize = 32 * 1024 * 1024 * 1024; // 32 GB
 const SPAN_CLASS_COUNT: u32 = 256;
 const MIN_ARENA_EXPANSION: usize = 4096; // 16 MB in pages
 const MAX_SMALL_SIZE: usize = 1024;
+const MAP_SHARED: i32 = 1;
 
 pub struct Messloc {}
 
