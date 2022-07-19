@@ -1,85 +1,48 @@
-use std::alloc::Layout;
+use std::alloc::{Layout};
 
-use messloc::blind::{Messloc, SystemSpanAlloc, SpanVec, span::SpanAllocator};
+use messloc::blind::{span::{SpanAllocator, TestSpanAllocator}, Messloc, SpanVec, SystemSpanAlloc};
 
-#[global_allocator]
-static ALLOCATOR: Messloc = Messloc::new();
+// #[global_allocator]
+// static ALLOCATOR: Messloc = Messloc::new();
+
+use rand::SeedableRng;
 
 fn main() {
-    unsafe {
-        let mut alloc = SystemSpanAlloc::get();
+    println!("hello");
 
-        let x = alloc.allocate_span(1).unwrap();
-        dbg!(&x);
+    use rand_xoshiro::Xoshiro256Plus;
 
-        let mut y = alloc.allocate_span(1).unwrap();
-        dbg!(&y);
+    let rng = Xoshiro256Plus::seed_from_u64(1);
+    let span_alloc = TestSpanAllocator;
+    let mut alloc = std::sync::Arc::new(messloc::blind::GlobalHeap::new(span_alloc, rng).unwrap());
 
-        x.data_ptr().as_ptr().cast::<u32>().write(123);
-        y.data_ptr().as_ptr().cast::<u32>().write(456);
+    let x = unsafe { alloc.alloc(Layout::new::<u64>()) };
+    dbg!(x);
 
-        dbg!(*x.data_ptr().as_ptr().cast::<u32>());
-        dbg!(*y.data_ptr().as_ptr().cast::<u32>());
+    std::thread::spawn({
+        let alloc = alloc.clone();
+        move || {
+            let x = unsafe { alloc.alloc(Layout::new::<u64>()) };
+            dbg!(x);
+        }
+    }).join().unwrap();
 
-        alloc.merge_spans(&x, &mut y).unwrap();
+    std::thread::spawn({
+        let alloc = alloc.clone();
+        move || {
+            let x = unsafe { alloc.alloc(Layout::new::<u64>()) };
+            dbg!(x);
+        }
+    }).join().unwrap();
 
-        dbg!(&x, &y);
+    std::thread::spawn({
+        let alloc = alloc.clone();
+        move || {
+            let x = unsafe { alloc.alloc(Layout::new::<u64>()) };
+            dbg!(x);
+        }
+    }).join().unwrap();
 
-        dbg!(*x.data_ptr().as_ptr().cast::<u32>());
-        dbg!(*y.data_ptr().as_ptr().cast::<u32>());
-
-        y.data_ptr().as_ptr().cast::<u32>().write(789);
-
-        dbg!(*x.data_ptr().as_ptr().cast::<u32>());
-        dbg!(*y.data_ptr().as_ptr().cast::<u32>());
-
-        x.data_ptr().as_ptr().cast::<u32>().write(42);
-
-        dbg!(*x.data_ptr().as_ptr().cast::<u32>());
-        dbg!(*y.data_ptr().as_ptr().cast::<u32>());
-
-        alloc.deallocate_span(y);
-        alloc.deallocate_span(x);
-        
-        std::thread::sleep(std::time::Duration::from_secs_f32(60.0));
-    }
-
-    // println!("test");
-    //
-    // dbg!(std::thread::current().id());
-    //
-    // let mut test: SpanVec<u32, _> = unsafe { SpanVec::with_capacity(&mut SystemSpanAlloc::get(), 10) }.unwrap();
-    // dbg!(&test);
-    // dbg!(test.as_slice());
-    // test.push(12);
-    // test.push(123);
-    // test.push(1234);
-    // dbg!(test.as_slice());
-    //
-    // unsafe { test.add_more_capacity(&mut SystemSpanAlloc::get(), 10) };
-    // dbg!(&test);
-    //
-    // std::thread::sleep(std::time::Duration::from_secs_f32(60.0));
-    //
-    // // for x in 0..10000 {
-    // //     test.push(x);
-    // // }
-    // let span = test.drop_items(|item| { dbg!(item); });
-    // unsafe { SystemSpanAlloc::get().deallocate_span(span) };
-    //
-    // *dbg!(ALLOCATOR.test_alloc()) = 101;
-    // *dbg!(ALLOCATOR.test_alloc()) = 42;
-    // dbg!(ALLOCATOR.test_alloc());
-    //
-    // std::thread::spawn(move || {
-    //     *dbg!(ALLOCATOR.test_alloc()) = 123;
-    //     dbg!(ALLOCATOR.test_alloc());
-    //     std::thread::sleep(std::time::Duration::from_secs_f32(60.0));
-    // }).join();
-    //
-    // dbg!(ALLOCATOR.test_alloc());
-
-    // let mut x = "test".to_string();
-    // x.push('x');
-    // dbg!(x);
+    let x = unsafe { alloc.alloc(Layout::new::<u64>()) };
+    dbg!(x);
 }

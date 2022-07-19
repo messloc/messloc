@@ -8,11 +8,11 @@ pub struct Span<H> {
     /// Span of pages this span manages.
     data: NonNull<u8>,
 
-    /// Length of the span's allocation in pages.
-    pages: u16,
-
     /// Extra handle for allocator to use.
     handle: H,
+
+    /// Length of the span's allocation in pages.
+    pages: u16,
 
     /// State of the span.
     state: State,
@@ -21,6 +21,7 @@ pub struct Span<H> {
 // TODO: add this to the span allocator's safety requirements
 unsafe impl<H> Send for Span<H> {}
 
+#[repr(u8)]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum State {
     /// Span is normally allocated.
@@ -72,6 +73,7 @@ impl<H> Span<H> {
 /// # Safety
 /// - The value returned by `page_size` **cannot** change during the lifetime of an instance.
 ///     It is allowed to be different between instances.
+/// - The spans created by the type **must** be aligned to a minimum of `page_size`.
 pub unsafe trait SpanAllocator {
     type AllocError;
     type DeallocError;
@@ -85,14 +87,14 @@ pub unsafe trait SpanAllocator {
     ///
     /// # Safety
     /// - The returned span **cannot** be used after this instance is dropped.
-    unsafe fn allocate_span(&mut self, pages: u16) -> Result<Span<Self::Handle>, Self::AllocError>;
+    unsafe fn allocate_span(&self, pages: u16) -> Result<Span<Self::Handle>, Self::AllocError>;
 
     /// Deallocate a span.
     ///
     /// # Safety
     /// - The passed `span` **must** have been allocated by this instance.
     /// - **No** pointers/references into the span's pages will be dereferenced after this call.
-    unsafe fn deallocate_span(&mut self, span: Span<Self::Handle>) -> Result<(), Self::DeallocError>;
+    unsafe fn deallocate_span(&self, span: &Span<Self::Handle>) -> Result<(), Self::DeallocError>;
 
     /// Merge two spans together.
     ///
@@ -102,13 +104,18 @@ pub unsafe trait SpanAllocator {
     /// - `span` and `span_to_merge` are of the **same** length.
     /// - `span` and `span_to_merge` **must** have no overlapping active values.
     unsafe fn merge_spans(
-        &mut self,
+        &self,
         span: &Span<Self::Handle>,
         span_to_merge: &mut Span<Self::Handle>,
     ) -> Result<(), Self::MergeError>;
 }
 
+#[derive(Copy, Clone)]
 pub struct TestSpanAllocator;
+
+#[derive(Copy, Clone)]
+#[repr(align(256))]
+struct Align256([u8; 4096]);
 
 unsafe impl SpanAllocator for TestSpanAllocator {
     type AllocError = ();
@@ -117,11 +124,11 @@ unsafe impl SpanAllocator for TestSpanAllocator {
     type Handle = ();
 
     fn page_size(&self) -> usize {
-        256
+        4095
     }
 
-    unsafe fn allocate_span(&mut self, pages: u16) -> Result<Span<Self::Handle>, ()> {
-        let data = vec![0u8; pages as usize * page_size::get()];
+    unsafe fn allocate_span(&self, pages: u16) -> Result<Span<Self::Handle>, ()> {
+        let data = vec![Align256([0; 4096]); pages as usize];
         let data = data.into_boxed_slice();
         let data = Box::into_raw(data);
         let data = data as *mut u8;
@@ -132,8 +139,12 @@ unsafe impl SpanAllocator for TestSpanAllocator {
         Ok(unsafe { Span::new(data, (), pages) })
     }
 
-    unsafe fn deallocate_span(&mut self, span: Span<Self::Handle>) -> Result<(), ()> {
-        Box::from_raw(span.data.as_ptr());
+    unsafe fn deallocate_span(&self, span: &Span<Self::Handle>) -> Result<(), ()> {
+        let slice = std::ptr::slice_from_raw_parts_mut(
+            span.data.as_ptr().cast::<Align256>(),
+            span.pages as usize,
+        );
+        Box::from_raw(slice);
 
         eprintln!("Deallocated pages: {}", span.pages());
 
@@ -141,7 +152,7 @@ unsafe impl SpanAllocator for TestSpanAllocator {
     }
 
     unsafe fn merge_spans(
-        &mut self,
+        &self,
         span: &Span<Self::Handle>,
         span_to_merge: &mut Span<Self::Handle>,
     ) -> Result<(), ()> {
