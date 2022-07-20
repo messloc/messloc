@@ -18,6 +18,14 @@ pub struct Span<H> {
     state: State,
 }
 
+impl<H> Drop for Span<H> {
+    fn drop(&mut self) {
+        if self.state != State::Invalid {
+            eprintln!("Warning: Span dropped without deallocating it!");
+        }
+    }
+}
+
 // TODO: add this to the span allocator's safety requirements
 unsafe impl<H> Send for Span<H> {}
 
@@ -29,6 +37,9 @@ pub enum State {
 
     /// Span has been merged with another span.
     Merged,
+
+    /// Span does not point to valid data.
+    Invalid,
 }
 
 impl<H> Span<H> {

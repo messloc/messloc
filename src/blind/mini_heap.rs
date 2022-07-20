@@ -1,4 +1,4 @@
-use std::{alloc::Layout, ptr::NonNull};
+use std::{alloc::Layout, ptr::{NonNull, slice_from_raw_parts_mut}};
 
 use rand::Rng;
 
@@ -35,8 +35,8 @@ pub struct MiniHeap<H> {
 }
 
 impl<H> MiniHeap<H> {
-    pub fn new(span: Span<H>, size_class: u16) -> Self {
-        let max_allocations = (span.pages() / size_class).try_into().unwrap();
+    pub unsafe fn new(span: Span<H>, page_size: usize, size_class: u16) -> Self {
+        let max_allocations = ((span.pages() as usize * page_size) / size_class as usize).min(u8::MAX as usize).try_into().unwrap();
 
         Self {
             span,
@@ -49,16 +49,16 @@ impl<H> MiniHeap<H> {
 
     /// # Safety
     /// - `offset` must be free as given by the `free_iter`.
-    pub unsafe fn alloc(&mut self, offset: u8) -> NonNull<u8> {
+    pub unsafe fn alloc(&mut self, offset: u8) -> NonNull<[u8]> {
         self.allocation_mask.used(offset);
-        unsafe {
-            NonNull::new_unchecked(
-                self.span
-                    .data_ptr()
-                    .as_ptr()
-                    .offset(offset as isize * self.size_class as isize),
-            )
-        }
+        let pointer = unsafe {
+            self.span
+                .data_ptr()
+                .as_ptr()
+                .offset(offset as isize * self.size_class as isize)
+        };
+        let slice_ptr = slice_from_raw_parts_mut(pointer, self.size_class as usize);
+        unsafe { NonNull::new_unchecked(slice_ptr) }
     }
 
     pub unsafe fn dealloc(&mut self, offset: u8) {

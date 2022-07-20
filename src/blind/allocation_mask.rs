@@ -17,7 +17,7 @@ impl<const COUNT: usize> AllocationMask<COUNT> {
     }
 
     pub fn used(&mut self, offset: u8) {
-        debug_assert!(offset < COUNT as u8 * 8);
+        debug_assert!((offset as usize) < COUNT * 8);
 
         let bin = offset >> 3;
         let bin_offset = offset & 0b111;
@@ -33,7 +33,7 @@ impl<const COUNT: usize> AllocationMask<COUNT> {
     }
 
     pub fn is_free(&self, offset: u8) -> bool {
-        debug_assert!(offset < COUNT as u8 * 8);
+        debug_assert!((offset as usize) < COUNT * 8);
 
         let bin = offset >> 3;
         let bin_offset = offset & 0b111;
@@ -49,6 +49,7 @@ impl<const COUNT: usize> AllocationMask<COUNT> {
     }
 }
 
+#[derive(Debug)]
 pub struct AllocationMaskFreeIter<'a, const COUNT: usize> {
     mask: &'a AllocationMask<COUNT>,
     offset: u8,
@@ -69,7 +70,7 @@ impl<'a, const COUNT: usize> Iterator for AllocationMaskFreeIter<'a, COUNT> {
             let offset = self.offset;
             self.offset += 1;
 
-            if self.mask.is_free(offset) {
+            if self.offset != self.count && self.mask.is_free(offset) {
                 return Some(self.offset);
             }
         }

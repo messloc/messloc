@@ -8,7 +8,7 @@ pub struct ShuffleVector<const COUNT: usize> {
 impl<const COUNT: usize> core::fmt::Debug for ShuffleVector<COUNT> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list()
-            .entries(&self.data[self.offset as usize..])
+            .entries(&self.data[0..self.offset as usize])
             .finish()
     }
 }
