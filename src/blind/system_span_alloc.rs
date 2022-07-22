@@ -37,8 +37,14 @@ unsafe impl SpanAllocator for SystemSpanAlloc {
             .call_once(|| unsafe { libc::sysconf(libc::_SC_PAGESIZE) as usize })
     }
 
-    unsafe fn allocate_span(&self, pages: u16) -> Result<Span<Self::Handle>, ()> {
+    unsafe fn allocate_span(&self, pages: usize) -> Result<Span<Self::Handle>, ()> {
         eprintln!("Allocated pages: {}", pages);
+
+        if pages == 0 {
+            let mut span = Span::new(NonNull::dangling(), -2, 0);
+            span.set_state(State::Invalid);
+            return Ok(span);
+        }
 
         let name = &['s' as u8, 0];
         let fd = libc::memfd_create(name as *const u8 as *const i8, libc::MFD_CLOEXEC);
@@ -47,7 +53,7 @@ unsafe impl SpanAllocator for SystemSpanAlloc {
             return Err(());
         }
 
-        let result = libc::ftruncate(fd, (self.page_size() * pages as usize) as i64);
+        let result = libc::ftruncate(fd, (self.page_size() * pages) as i64);
 
         if result != 0 {
             eprintln!("Failed to size fd!");
@@ -57,7 +63,7 @@ unsafe impl SpanAllocator for SystemSpanAlloc {
         let pointer = unsafe {
             libc::mmap(
                 null_mut(),
-                self.page_size() * pages as usize,
+                self.page_size() * pages,
                 libc::PROT_READ | libc::PROT_WRITE,
                 libc::MAP_SHARED,
                 fd,
@@ -73,13 +79,17 @@ unsafe impl SpanAllocator for SystemSpanAlloc {
         Ok(unsafe { Span::new(NonNull::new(pointer).unwrap().cast(), fd, pages) })
     }
 
-    unsafe fn deallocate_span(&self, span: &Span<Self::Handle>) -> Result<(), ()> {
+    unsafe fn deallocate_span(&self, span: &mut Span<Self::Handle>) -> Result<(), ()> {
         eprintln!(
             "Deallocated pages: {} {} {:?}",
             span.pages(),
             span.handle(),
             span.state()
         );
+
+        if span.handle() == &-2 {
+            return Ok(());
+        }
 
         let result = libc::munmap(
             span.data_ptr().as_ptr().cast(),
@@ -101,6 +111,8 @@ unsafe impl SpanAllocator for SystemSpanAlloc {
             }
         }
 
+        span.set_state(State::Invalid);
+
         Ok(())
     }
 
@@ -109,6 +121,8 @@ unsafe impl SpanAllocator for SystemSpanAlloc {
         span: &Span<Self::Handle>,
         span_to_merge: &mut Span<Self::Handle>,
     ) -> Result<(), ()> {
+        eprintln!("Merging pages!");
+
         if span.state() != State::Normal {
             return Err(());
         }

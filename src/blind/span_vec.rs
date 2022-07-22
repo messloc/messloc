@@ -1,7 +1,7 @@
 use core::marker::PhantomData;
 use core::mem::size_of;
 use core::ptr::copy_nonoverlapping;
-use std::{mem::align_of, ptr::drop_in_place};
+use std::{mem::align_of, ptr::{drop_in_place, NonNull}};
 
 use super::span::{Span, SpanAllocator, TestSpanAllocator};
 
@@ -20,7 +20,7 @@ where
 unsafe impl<T: Send, S: Send + SpanAllocator> Send for SpanVec<T, S> {}
 unsafe impl<T: Sync, S: Sync + SpanAllocator> Sync for SpanVec<T, S> {}
 
-fn div_ceil(a: usize, b: usize) -> usize {
+pub fn div_ceil(a: usize, b: usize) -> usize {
     (a + b - 1) / b
 }
 
@@ -43,7 +43,7 @@ where
         }
 
         // deallocate the span
-        let _ = unsafe { self.span_alloc.deallocate_span(&self.span) };
+        let _ = unsafe { self.span_alloc.deallocate_span(&mut self.span) };
     }
 }
 
@@ -56,7 +56,7 @@ where
 
         debug_assert!(page_size >= align_of::<T>());
 
-        let pages = div_ceil(capacity * size_of::<T>(), page_size).max(1);
+        let pages = div_ceil(capacity * size_of::<T>(), page_size);
         let span = unsafe { span_alloc.allocate_span(pages.try_into().unwrap())? };
 
         let capacity = (pages * page_size) / size_of::<T>();
@@ -70,7 +70,7 @@ where
         })
     }
 
-    pub fn reserve(&mut self, additional: usize) -> Result<(), S::AllocError> {
+    fn reserve(&mut self, additional: usize) -> Result<(), S::AllocError> {
         let page_size = self.span_alloc.page_size();
         let pages = div_ceil((self.length + additional) * size_of::<T>(), page_size).max(1);
 
@@ -90,18 +90,20 @@ where
             )
         };
 
-        let old_span = core::mem::replace(&mut self.span, span);
+        let mut old_span = core::mem::replace(&mut self.span, span);
 
         self.capacity = capacity;
 
-        unsafe { self.span_alloc.deallocate_span(&old_span).map_err(|_| ()) };
+        unsafe { self.span_alloc.deallocate_span(&mut old_span).map_err(|_| ()) };
 
         Ok(())
     }
 
-    pub fn push(&mut self, value: T) -> Result<usize, T> {
+    pub fn push(&mut self, value: T) -> Result<usize, (T, S::AllocError)> {
         if self.length == self.capacity {
-            return Err(value);
+            if let Err(err) = self.reserve(1) {
+                return Err((value, err));
+            }
         }
 
         let pointer: *mut T = unsafe {

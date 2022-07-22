@@ -72,6 +72,10 @@ impl<H> MiniHeap<H> {
     pub fn span(&self) -> &Span<H> {
         &self.span
     }
+
+    pub unsafe fn span_mut(&mut self) -> &mut Span<H> {
+        &mut self.span
+    }
 }
 
 #[test]
