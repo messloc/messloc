@@ -15,7 +15,6 @@ pub struct GlobalHeapStats {
 
 pub struct GlobalHeapShared;
 pub struct GlobalHeapGuarded {
-    arena: MeshableArena,
     miniheap_count: usize,
     stats: GlobalHeapStats,
 }
