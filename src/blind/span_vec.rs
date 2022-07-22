@@ -1,7 +1,10 @@
 use core::marker::PhantomData;
 use core::mem::size_of;
 use core::ptr::copy_nonoverlapping;
-use std::{mem::align_of, ptr::{drop_in_place, NonNull}};
+use std::{
+    mem::align_of,
+    ptr::{drop_in_place, NonNull},
+};
 
 use super::span::{Span, SpanAllocator, TestSpanAllocator};
 
@@ -94,7 +97,11 @@ where
 
         self.capacity = capacity;
 
-        unsafe { self.span_alloc.deallocate_span(&mut old_span).map_err(|_| ()) };
+        unsafe {
+            self.span_alloc
+                .deallocate_span(&mut old_span)
+                .map_err(|_| ())
+        };
 
         Ok(())
     }

@@ -1,12 +1,12 @@
-use std::ptr::NonNull;
 use std::ptr::null_mut;
+use std::ptr::NonNull;
 
 use spin::Once;
 
 use crate::blind::span::State;
 
-use super::span::SpanAllocator;
 use super::span::Span;
+use super::span::SpanAllocator;
 
 pub struct SystemSpanAlloc(Once<usize>);
 

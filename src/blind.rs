@@ -5,36 +5,37 @@
 
 pub mod allocation_mask;
 // pub mod linked_heap;
+pub mod global_heap;
 pub mod mini_heap;
 pub mod shuffle_vec;
+pub mod size_class;
 pub mod span;
 pub mod span_vec;
-pub mod global_heap;
-pub mod thread_heap;
 pub mod system_span_alloc;
+pub mod thread_heap;
 // pub mod local_heap;
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::UnsafeCell,
     marker::PhantomData,
     mem::MaybeUninit,
-    ptr::{null_mut, NonNull, slice_from_raw_parts_mut},
+    ptr::{null_mut, slice_from_raw_parts_mut, NonNull},
     thread::ThreadId,
 };
 
 use allocation_mask::*;
 use rand::SeedableRng;
 // use linked_heap::*;
+pub use global_heap::*;
 use mini_heap::*;
 use rand::Rng;
 use shuffle_vec::*;
 use span::*;
 pub use span_vec::*;
 use spin::{Lazy, Mutex, Once, RwLock, RwLockReadGuard, RwLockUpgradableGuard};
-use thread_local::ThreadLocal;
-pub use global_heap::*;
-pub use thread_heap::*;
 pub use system_span_alloc::*;
+pub use thread_heap::*;
+use thread_local::ThreadLocal;
 
 const SIZE_CLASS_COUNT: usize = 25;
 
@@ -51,9 +52,7 @@ pub struct Messloc {
 
 impl Messloc {
     pub const fn new() -> Self {
-        Self {
-            heap: Once::new(),
-        }
+        Self { heap: Once::new() }
     }
 
     fn create_global_heap() -> GlobalHeap<Xoshiro256Plus, SystemSpanAlloc> {
@@ -78,4 +77,3 @@ unsafe impl GlobalAlloc for Messloc {
         // self.heap.span_alloc.deallocate_span(&span);
     }
 }
-

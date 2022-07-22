@@ -1,7 +1,10 @@
-use std::{alloc::{Layout}, borrow::BorrowMut, ops::DerefMut};
 use std::cell::*;
+use std::{alloc::Layout, borrow::BorrowMut, ops::DerefMut};
 
-use messloc::blind::{span::{SpanAllocator, TestSpanAllocator}, Messloc, SpanVec, SystemSpanAlloc};
+use messloc::blind::{
+    span::{SpanAllocator, TestSpanAllocator},
+    Messloc, SpanVec, SystemSpanAlloc,
+};
 
 #[global_allocator]
 static ALLOCATOR: Messloc = Messloc::new();
@@ -22,7 +25,7 @@ fn main() {
     //     *f.borrow_mut() = 54;
     //     dbg!(f.borrow());
     // });
-    
+
     // std::thread::spawn({
     //     move || {
     //         println!("hello");
@@ -33,7 +36,7 @@ fn main() {
     //         // });
     //     }
     // }).join().unwrap();
-    
+
     // println!("start");
     // let mut total = 0.0;
     // for _ in 0..1000 {

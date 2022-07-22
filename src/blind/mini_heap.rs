@@ -1,4 +1,7 @@
-use std::{alloc::Layout, ptr::{NonNull, slice_from_raw_parts_mut}};
+use std::{
+    alloc::Layout,
+    ptr::{slice_from_raw_parts_mut, NonNull},
+};
 
 use rand::Rng;
 
@@ -36,7 +39,10 @@ pub struct MiniHeap<H> {
 
 impl<H> MiniHeap<H> {
     pub unsafe fn new(span: Span<H>, page_size: usize, size_class: u16) -> Self {
-        let max_allocations = ((span.pages() as usize * page_size) / size_class as usize).min(u8::MAX as usize).try_into().unwrap();
+        let max_allocations = ((span.pages() as usize * page_size) / size_class as usize)
+            .min(u8::MAX as usize)
+            .try_into()
+            .unwrap();
 
         Self {
             span,

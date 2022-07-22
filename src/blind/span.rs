@@ -106,7 +106,10 @@ pub unsafe trait SpanAllocator {
     /// # Safety
     /// - The passed `span` **must** have been allocated by this instance.
     /// - **No** pointers/references into the span's pages will be dereferenced after this call.
-    unsafe fn deallocate_span(&self, span: &mut Span<Self::Handle>) -> Result<(), Self::DeallocError>;
+    unsafe fn deallocate_span(
+        &self,
+        span: &mut Span<Self::Handle>,
+    ) -> Result<(), Self::DeallocError>;
 
     /// Merge two spans together.
     ///
