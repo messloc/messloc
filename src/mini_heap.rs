@@ -1,16 +1,19 @@
 use std::{
     ptr::{addr_of_mut, null_mut},
     sync::atomic::{
-        AtomicU32,
+        AtomicPtr, AtomicU32,
         Ordering::{Relaxed, Release, SeqCst},
     },
 };
 
+use libc::c_void;
+
 use crate::{
-    atomic_bitmap::AtomicBitmap256, class_array::class_array, meshable_arena::Span, ARENA_SIZE,
-    MAX_SMALL_SIZE, PAGE_SIZE,
+    atomic_bitmap::AtomicBitmap256, class_array::class_array, comparatomic::Comparatomic,
+    one_way_mmap_heap::Heap, span::Span, MAX_SMALL_SIZE, PAGE_SIZE,
 };
 
+#[derive(PartialEq, Default)]
 pub struct MiniHeap {
     bitmap: AtomicBitmap256,
     span: Span,
@@ -71,6 +74,10 @@ impl MiniHeap {
         todo!()
     }
 
+    pub const fn span_size(&self) -> usize {
+        self.span.byte_length()
+    }
+
     pub fn is_large_alloc(&self) -> bool {
         self.max_count() == 1
     }
@@ -91,10 +98,15 @@ impl MiniHeap {
                 .cast()
         }
     }
+
+    pub unsafe fn get_span_start(&self, addr: *mut crate::meshable_arena::Page) -> *mut c_void {
+        addr.add(self.span.length as usize * PAGE_SIZE) as *mut c_void
+    }
 }
 
+#[derive(PartialEq, Default)]
 pub struct Flags {
-    flags: AtomicU32,
+    flags: Comparatomic<AtomicU32>,
 }
 
 impl Flags {
@@ -110,40 +122,41 @@ impl Flags {
             + (sv_offset << Self::SHUFFLE_VECTOR_OFFSET_SHIFT)
             + (freelist_id << Self::FREELIST_ID_SHIFT);
         Self {
-            flags: flags.into(),
+            flags: Comparatomic::new(flags),
         }
     }
 
     fn set_at(&self, pos: u32) {
         let mask: u32 = 1 << pos;
-        let old_value = self.flags.fetch_or(mask, Release);
+        let old_value = self.flags.inner().fetch_or(mask, Release);
     }
 
     fn unset_at(&self, pos: u32) {
         let mask: u32 = 1 << pos;
-        let old_value = self.flags.fetch_and(!mask, Release);
+        let old_value = self.flags.inner().fetch_and(!mask, Release);
     }
 
     fn set_masked(&self, mask: u32, new_val: u32) {
         self.flags
+            .inner()
             .fetch_update(Release, Relaxed, |old| Some((old & mask) | new_val))
             .unwrap();
     }
 
     pub fn max_count(&self) -> u32 {
-        (self.flags.load(SeqCst) >> Self::MAX_COUNT_SHIFT) & 0x1ff
+        (self.flags.inner().load(SeqCst) >> Self::MAX_COUNT_SHIFT) & 0x1ff
     }
 
     pub fn size_class(&self) -> u32 {
-        (self.flags.load(SeqCst) >> Self::SIZE_CLASS_SHIFT) & 0x3f
+        (self.flags.inner().load(SeqCst) >> Self::SIZE_CLASS_SHIFT) & 0x3f
     }
 
     pub fn sv_offset(&self) -> u32 {
-        (self.flags.load(SeqCst) >> Self::SHUFFLE_VECTOR_OFFSET_SHIFT) & 0xff
+        (self.flags.inner().load(SeqCst) >> Self::SHUFFLE_VECTOR_OFFSET_SHIFT) & 0xff
     }
 
     pub fn freelist_id(&self) -> u32 {
-        (self.flags.load(SeqCst) >> Self::FREELIST_ID_SHIFT) & 0x3
+        (self.flags.inner().load(SeqCst) >> Self::FREELIST_ID_SHIFT) & 0x3
     }
 
     pub fn set_meshed(&self) {
@@ -155,7 +168,7 @@ impl Flags {
     }
 
     pub fn is_meshed(&self) -> bool {
-        (self.flags.load(SeqCst) >> Self::MESHED_OFFSET) & 1 == 1
+        (self.flags.inner().load(SeqCst) >> Self::MESHED_OFFSET) & 1 == 1
     }
 
     pub fn set_freelist_id(&self, id: u32) {
@@ -181,15 +194,20 @@ impl MiniHeapId {}
 // FIXME:: replace this with MiniHeapId and make it atomic if all usages of MiniHeapId are atomic
 // FIXME:: consider whether we need to multiply the array size by size of usize
 #[derive(Debug)]
-pub struct AtomicMiniHeapId([AtomicU32; ARENA_SIZE / PAGE_SIZE]);
 
-impl AtomicMiniHeapId {
-    pub fn get(&self, index: usize) -> Option<&AtomicU32> {
-        self.0.get(index)
+pub struct AtomicMiniHeapId<T: Heap>(AtomicPtr<T>);
+
+impl<T: Heap> AtomicMiniHeapId<T> {
+    pub fn new(ptr: *mut T) -> AtomicMiniHeapId<T> {
+        AtomicMiniHeapId(AtomicPtr::new(ptr))
+    }
+
+    pub fn inner(&mut self) -> *mut T {
+        self.0.load(SeqCst)
     }
 }
 
-impl Default for AtomicMiniHeapId {
+impl<T: Heap> Default for AtomicMiniHeapId<T> {
     fn default() -> Self {
         todo!()
     }

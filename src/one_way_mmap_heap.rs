@@ -4,16 +4,19 @@ use std::{process::abort, ptr::null_mut};
 use crate::PAGE_SIZE;
 
 pub trait Heap {
-    // unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut ();
-    unsafe fn malloc(&mut self, size: usize) -> *mut ();
+    type PointerType;
+    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int)
+        -> Self::PointerType;
+    unsafe fn malloc(&mut self, size: usize) -> Self::PointerType;
     unsafe fn get_size(&mut self, ptr: *mut ()) -> usize;
     unsafe fn free(&mut self, ptr: *mut ());
 }
 
 pub struct OneWayMmapHeap;
 
-impl OneWayMmapHeap {
-    pub unsafe fn map(&mut self, mut size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
+impl Heap for OneWayMmapHeap {
+    type PointerType = *mut ();
+    unsafe fn map(&mut self, mut size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
         if size == 0 {
             return null_mut();
         }
@@ -31,9 +34,7 @@ impl OneWayMmapHeap {
 
         ptr.cast()
     }
-}
 
-impl Heap for OneWayMmapHeap {
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         self.map(size, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1)
     }

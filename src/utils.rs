@@ -99,6 +99,16 @@ pub unsafe fn wait_till_memory_ready(fd: i32) {
     }
 }
 
+type UnsafeFunction = Option<unsafe extern "C" fn()>;
+
+pub unsafe fn pthread_atfork(
+    prepare: UnsafeFunction,
+    parent: UnsafeFunction,
+    child: UnsafeFunction,
+) -> Result<()> {
+    OutputWrapper(libc::pthread_atfork(prepare, parent, child)).into()
+}
+
 #[derive(Clone)]
 pub struct Stat(libc::stat);
 

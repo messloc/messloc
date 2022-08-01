@@ -1,58 +1,24 @@
 use libc::c_void;
 
+use crate::arena_fs::open_shm_span_file;
 use crate::runtime::Runtime;
+use crate::span::{Length, Offset, Span, SpanList};
 use crate::{
     cheap_heap::CheapHeap,
     mini_heap::{AtomicMiniHeapId, MiniHeap},
-    ARENA_SIZE, MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT,
+    one_way_mmap_heap::Heap,
+    ARENA_SIZE, DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT,
 };
+use std::mem::size_of;
 use std::{
-    collections::HashSet,
-    fs::create_dir_all,
-    mem::MaybeUninit,
     path::PathBuf,
     pointer::offset_from,
-    process::id,
     ptr::null_mut,
     sync::atomic::Ordering,
     sync::{Arc, Mutex},
 };
 
-use crate::utils::*;
-const TMP_DIR: &str = "/tmp";
-
-#[derive(Clone, Debug, Default)]
-pub struct Span {
-    pub offset: Offset,
-    pub length: Length,
-}
-pub type Offset = u32;
-pub type Length = u32;
-
-impl Span {
-    fn new(offset: u32, length: u32) -> Span {
-        Span { offset, length }
-    }
-
-    fn class(self) -> u32 {
-        Length::min(self.length, SPAN_CLASS_COUNT) - 1
-    }
-
-    fn split_after(&mut self, page_count: Length) -> Self {
-        debug_assert!(page_count <= self.length);
-        let rest_page_count = self.length - page_count;
-        self.length = page_count;
-        Span {
-            offset: self.offset + page_count,
-            length: rest_page_count,
-        }
-    }
-
-    fn is_empty(self) -> bool {
-        self.length == 0
-    }
-}
-
+use crate::{utils::*, MAP_SHARED};
 pub type Page = [u8; PAGE_SIZE];
 
 pub struct MeshableArena {
@@ -61,22 +27,45 @@ pub struct MeshableArena {
     fd: i32,
     /// offset in pages
     end: Offset,
-    dirty: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
-    clean: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
-    mh_index: AtomicMiniHeapId,
+    dirty: SpanList,
+    clean: SpanList,
+    freed_spans: SpanList,
+    mh_index: AtomicMiniHeapId<CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>>,
     pub(crate) mh_allocator: CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>,
     meshed_bitmap: MeshedBitmap,
-    freed_spans: [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
     fork_pipe: [i32; 2],
     span_dir: PathBuf,
-    dirty_page_threshold: usize,
     meshed_page_count_hwm: usize,
 }
 
 impl MeshableArena {
-    pub fn new() -> MeshableArena {
+    pub fn init() -> MeshableArena {
+        // TODO: check if meshing enabled
         //TODO: initialise stuff from the constructor
-        todo!()
+
+        let fd = open_shm_span_file(ARENA_SIZE);
+
+        let mh_allocator = CheapHeap::new();
+        let arena_begin =
+            unsafe { mh_allocator.map(ARENA_SIZE, MAP_SHARED, fd).inner() as *mut Page };
+        let mh_index = unsafe { mh_allocator.malloc(index_size()) };
+
+        MeshableArena {
+            runtime: Arc::new(Mutex::new(Runtime::default())),
+            arena_begin,
+            fd,
+            //TODO:: find initial end value
+            end: Offset::default(),
+            dirty: SpanList::default(),
+            clean: SpanList::default(),
+            mh_allocator,
+            mh_index,
+            meshed_bitmap: MeshedBitmap::default(),
+            freed_spans: SpanList::default(),
+            fork_pipe: [-1, -1],
+            span_dir: PathBuf::default(),
+            meshed_page_count_hwm: 0,
+        }
     }
 
     pub fn page_alloc(&mut self, page_count: usize, page_align: usize) -> (Span, *mut Page) {
@@ -170,7 +159,7 @@ impl MeshableArena {
         //     abort();
         //   }
 
-        self.clean[expansion.class() as usize].push(expansion)
+        self.clean.inner()[expansion.class() as usize].push(expansion)
 
         //   _clean[expansion.spanClass()].push_back(expansion);
     }
@@ -201,11 +190,11 @@ impl MeshableArena {
     }
 
     fn find_pages_inner(
-        free_spans: &mut [arrayvec::ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize],
+        free_spans: &mut SpanList,
         span_class: u32,
         page_count: u32,
     ) -> Option<Span> {
-        let spans = &mut free_spans[span_class as usize];
+        let spans = &mut free_spans.get(span_class as usize).unwrap();
         if spans.is_empty() {
             return None;
         }
@@ -261,11 +250,11 @@ impl MeshableArena {
     }
 
     pub unsafe fn set_index(&mut self, offset: usize, id: u32) {
-        (&*self.mh_index.add(offset)).store(id, Release);
+        (&*self.mh_index.add(offset)).store(id, Ordering::Release);
     }
 
     fn scavenge(&self, force: bool) {
-        if force && self.dirty.len() < self.dirty_page_threshold {
+        if force && self.dirty.len() < DIRTY_PAGE_THRESHOLD {
             let mut bitmap = Bitmap::new();
             bitmap.invert();
 
@@ -308,6 +297,7 @@ impl MeshableArena {
 
             if !current.is_empty() {
                 self.clean
+                    .inner()
                     .get_mut(current.class() as usize)
                     .unwrap()
                     .push(current);
@@ -328,12 +318,15 @@ impl MeshableArena {
     }
 
     fn partial_scavenge(&self) {
-        for_each_free(self.dirty, |span| {
-            let ptr = unsafe { self.arena_begin.add(span.offset) };
+        self.dirty.for_each_free(|span| {
+            let ptr = unsafe { self.arena_begin.add(span.offset as usize) };
             let size = span.byte_length();
             unsafe { madvise(ptr as *mut c_void, size) };
-            self.free_physical(ptr, span.offset, size);
-            self.clean.get_mut(span.span_class).unwrap().push(span);
+            self.free_physical(ptr, span.offset as usize, size);
+            self.clean
+                .get_mut(span.class() as usize)
+                .unwrap()
+                .push(*span);
         });
 
         self.dirty.clear();
@@ -377,116 +370,7 @@ impl MeshableArena {
         });
     }
 
-    fn open_shm_span_file(&mut self, size: usize) -> i32 {
-        self.span_dir = self.open_span_dir().unwrap();
-        // this is required for mkstemp
-        self.span_dir.push("XXXXXX");
-        unsafe {
-            let fd = mkstemp(&self.span_dir).unwrap();
-            let _ = unlink(&self.span_dir).unwrap();
-            let _ = ftruncate(fd, size).unwrap();
-            let _ = fcntl(fd);
-            fd
-        }
-    }
-
-    fn open_span_dir(&self) -> Option<PathBuf> {
-        let pid = id();
-        let mut i = 1;
-        loop {
-            let mut path = PathBuf::from(TMP_DIR);
-            path.join(format!("alloc-mesh-{pid}.{i}"));
-            if create_dir_all(path).is_ok() {
-                return Some(path);
-            } else if i >= 1024 {
-                break;
-            } else {
-                i += 1;
-            }
-        }
-        None
-    }
-
-    fn fork_parent(&self) {
-        // FIXME:: check if meshing is disabled and quit
-        // FIXME:: consider whether to lock inner heap or not
-        let lock = self.runtime.lock();
-
-        unsafe {
-            let _ = mprotect_read(self.arena_begin as *mut c_void, ARENA_SIZE).unwrap();
-            let _ = pipe(self.fork_pipe).unwrap();
-        }
-        // FIXME:: unlock internal heap lock if needed
-
-        unsafe {
-            let _ = close(self.fork_pipe[1]).unwrap();
-            wait_till_memory_ready(self.fork_pipe[0]);
-
-            self.fork_pipe = [-1, -1];
-            let _ = mprotect_write(self.arena_begin as *mut c_void, ARENA_SIZE).unwrap();
-        }
-    }
-
-    fn after_fork_child(&self) {
-        let runtime = (&self.runtime).lock().unwrap().update_pid();
-        if self.fork_pipe[0] != -1 {
-            let _ = unsafe { close(self.fork_pipe[0]).unwrap() };
-            //FIXME:: consider using or giving the option of MEMFD
-            let new_fd = self.open_shm_span_file(ARENA_SIZE);
-            let file_info = MaybeUninit::<Stat>::uninit();
-            let _ = unsafe { fstat(new_fd, &file_info).unwrap() };
-            let bitmap = self.allocated_bitmap();
-            bitmap.iter().enumerate().try_for_each(|(i, _)| {
-                copy_file(new_fd, self.fd, i * PAGE_SIZE, PAGE_SIZE).unwrap();
-            });
-
-            unsafe {
-                let addr = self.arena_begin as *mut c_void;
-                let _ = mprotect_write(addr, ARENA_SIZE).unwrap();
-                let _ = mmap(addr, new_fd, ARENA_SIZE, 0).unwrap();
-            }
-            self.redo_meshed_mappings();
-        }
-    }
-
-    fn redo_meshed_mappings(&self) {
-        let seen_mini_heaps = HashSet::<MiniHeap>::new();
-        for (i, entry) in self.meshed_bitmap.iter().enumerate() {
-            let mh = self.mini_heap_for_arena_offset(i).unwrap();
-            if seen_mini_heaps.iter().find(mh).is_none() {
-                seen_mini_heaps: insert(mh);
-
-                let size = mh.span_size();
-                let keep = mh.get_span_start(self.arena_begin) as *mut void;
-                let keep_offset = unsafe { keep.offset_from(self.arena_begin) as *mut void };
-                mh.for_each_meshed(|mesh| {
-                    let remove = mh.get_span_start(self.arena_begin);
-                    let remove_offset =
-                        unsafe { remove.offset_from(self.arena_begin) as *mut void };
-                    let _ = unsafe {
-                        mmap(
-                            remove,
-                            new_fd,
-                            size,
-                            usize::try_from(keep_offset).unwrap() * PAGE_SIZE,
-                        )
-                        .unwrap()
-                    };
-
-                    false
-                });
-            }
-        }
-
-        self.fd = new_fd;
-        unsafe {
-            wait_till_memory_ready(self.fork_pipe[1]);
-            close(self.fork_pipe[1]);
-        }
-        self.fork_pipe = [-1, -1];
-    }
-
-    fn mini_heap_for_arena_offset(&self, arena_offset: usize) -> Option<u32> {
+    fn mini_heap_for_arena_offset(&self, arena_offset: usize) -> Option<MiniHeap> {
         let mh_offset = self
             .mh_index
             .get(arena_offset)
@@ -494,6 +378,10 @@ impl MeshableArena {
             .load(Ordering::Acquire);
         self.mh_allocator.get(mh_offset)
     }
+}
+
+const fn index_size() -> usize {
+    size_of::<Offset>() * ARENA_SIZE / PAGE_SIZE
 }
 
 #[derive(PartialEq, Debug, Clone, Copy)]

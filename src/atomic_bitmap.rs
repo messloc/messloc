@@ -1,12 +1,13 @@
+use crate::comparatomic::Comparatomic;
 use std::sync::atomic::{
     AtomicU64,
-    Ordering::{AcqRel, Relaxed, Release},
+    Ordering::{AcqRel, Release},
 };
 
-#[derive(Default)]
+#[derive(Default, PartialEq)]
 pub struct AtomicBitmap256 {
     // TODO: support non u64 atomic platforms?
-    bits: [AtomicU64; 4],
+    bits: [Comparatomic<AtomicU64>; 4],
 }
 
 impl AtomicBitmap256 {
@@ -19,23 +20,23 @@ impl AtomicBitmap256 {
         } = from;
         AtomicBitmap256 {
             bits: [
-                AtomicU64::new(s0.swap(f0.into_inner(), AcqRel)),
-                AtomicU64::new(s1.swap(f1.into_inner(), AcqRel)),
-                AtomicU64::new(s2.swap(f2.into_inner(), AcqRel)),
-                AtomicU64::new(s3.swap(f3.into_inner(), AcqRel)),
+                Comparatomic::new(s0.inner().swap(f0.inner().into_inner(), AcqRel)),
+                Comparatomic::new(s1.inner().swap(f1.inner().into_inner(), AcqRel)),
+                Comparatomic::new(s2.inner().swap(f2.inner().into_inner(), AcqRel)),
+                Comparatomic::new(s3.inner().swap(f3.inner().into_inner(), AcqRel)),
             ],
         }
     }
 
     fn set_at(&self, item: u32, pos: u32) -> bool {
         let mask: u64 = 1 << pos;
-        let old_value = self.bits[item as usize].fetch_or(mask, Release);
+        let old_value = self.bits[item as usize].inner().fetch_or(mask, Release);
         (old_value & mask) == 0
     }
 
     fn unset_at(&self, item: u32, pos: u32) -> bool {
         let mask: u64 = 1 << pos;
-        let old_value = self.bits[item as usize].fetch_and(!mask, Release);
+        let old_value = self.bits[item as usize].inner().fetch_and(!mask, Release);
         (old_value & mask) == 0
     }
 

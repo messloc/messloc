@@ -1,10 +1,9 @@
-use std::sync::{Mutex, MutexGuard, PoisonError};
-
 use crate::{
     cheap_heap::DynCheapHeap,
     mmap_heap::MmapHeap,
     one_way_mmap_heap::{Heap, OneWayMmapHeap},
 };
+use std::sync::{Mutex, MutexGuard, PoisonError};
 pub struct InternalHeap;
 
 impl InternalHeap {
@@ -21,6 +20,10 @@ impl InternalHeap {
 }
 
 impl Heap for InternalHeap {
+    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::int) -> *mut () {
+        todo!()
+    }
+
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         self.get().malloc(size)
     }
@@ -86,6 +89,10 @@ pub const fn log2(x: usize) -> u32 {
 }
 
 impl crate::one_way_mmap_heap::Heap for PartitionedHeap {
+    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
+        todo!()
+    }
+
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         let size_class = (log2(size.max(8)) - 3) as usize;
 

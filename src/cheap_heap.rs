@@ -1,6 +1,10 @@
+use crate::mini_heap::AtomicMiniHeapId;
+use crate::utils::mmap;
+use crate::{
+    one_way_mmap_heap::{Heap, OneWayMmapHeap},
+    PAGE_SIZE,
+};
 use std::{mem::size_of, ptr::null_mut};
-
-use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 
 pub struct CheapHeap<const ALLOC_SIZE: usize, const MAX_COUNT: usize> {
     arena: *mut [u8; ALLOC_SIZE],         // [[u8; ALLOC_SIZE]; MAX_COUNT]
@@ -46,8 +50,20 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_
 }
 
 impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_SIZE, MAX_COUNT> {
-    unsafe fn malloc(&mut self, size: usize) -> *mut () {
-        OneWayMmapHeap.malloc(size)
+    type PointerType = AtomicMiniHeapId<Self>;
+    unsafe fn map(
+        &mut self,
+        size: usize,
+        flags: libc::c_int,
+        fd: libc::c_int,
+    ) -> Self::PointerType {
+        let size = (size + PAGE_SIZE - 1) & (PAGE_SIZE - 1);
+        let ptr = mmap(null_mut(), fd, size, 0).unwrap();
+        AtomicMiniHeapId::new(ptr as *mut Self)
+    }
+
+    unsafe fn malloc(&mut self, size: usize) -> Self::PointerType {
+        AtomicMiniHeapId::new(OneWayMmapHeap.malloc(size).cast())
     }
 
     unsafe fn get_size(&mut self, _: *mut ()) -> usize {
@@ -114,6 +130,10 @@ impl DynCheapHeap {
 }
 
 impl Heap for DynCheapHeap {
+    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
+        todo!()
+    }
+
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         OneWayMmapHeap.malloc(size)
     }

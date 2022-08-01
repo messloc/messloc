@@ -6,6 +6,7 @@ use std::{
 
 use crate::{meshable_arena::MeshableArena, mini_heap::MiniHeap, PAGE_SIZE};
 
+#[derive(Default)]
 pub struct GlobalHeapStats {
     mesh_count: AtomicUsize,
     free_count: usize,
@@ -13,11 +14,16 @@ pub struct GlobalHeapStats {
     high_water_mark: usize,
 }
 
+#[derive(Default)]
 pub struct GlobalHeapShared;
+
+#[derive(Default)]
 pub struct GlobalHeapGuarded {
     miniheap_count: usize,
     stats: GlobalHeapStats,
 }
+
+#[derive(Default)]
 pub struct GlobalHeap {
     shared: GlobalHeapShared,
     guarded: Mutex<GlobalHeapGuarded>,
