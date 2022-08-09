@@ -8,6 +8,13 @@ pub struct MmapHeap {
 }
 
 impl Heap for MmapHeap {
+    type PointerType = *mut ();
+    type MallocType = *mut ();
+
+    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
+        todo!()
+    }
+
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         let ptr = OneWayMmapHeap.map(size, MAP_PRIVATE | MAP_ANONYMOUS, -1);
         self.map.push((ptr, size));

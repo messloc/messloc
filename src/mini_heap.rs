@@ -1,15 +1,12 @@
 use std::{
     ptr::{addr_of_mut, null_mut},
-    sync::atomic::{
-        AtomicPtr, AtomicU32,
-        Ordering::{Relaxed, Release, SeqCst},
-    },
+    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
 };
 
 use libc::c_void;
 
 use crate::{
-    atomic_bitmap::AtomicBitmap256, class_array::class_array, comparatomic::Comparatomic,
+    atomic_bitmap::AtomicBitmap256, class_array::CLASS_ARRAY, comparatomic::Comparatomic,
     one_way_mmap_heap::Heap, span::Span, MAX_SMALL_SIZE, PAGE_SIZE,
 };
 
@@ -44,7 +41,7 @@ fn class_index(size: usize) -> usize {
     }
 }
 fn size_class(size: usize) -> u32 {
-    class_array[class_index(size)]
+    CLASS_ARRAY[class_index(size)]
 }
 
 impl MiniHeap {
@@ -74,7 +71,7 @@ impl MiniHeap {
         todo!()
     }
 
-    pub const fn span_size(&self) -> usize {
+    pub fn span_size(&self) -> usize {
         self.span.byte_length()
     }
 
@@ -128,35 +125,37 @@ impl Flags {
 
     fn set_at(&self, pos: u32) {
         let mask: u32 = 1 << pos;
-        let old_value = self.flags.inner().fetch_or(mask, Release);
+        let old_value = self.flags.inner().fetch_or(mask, Ordering::Release);
     }
 
     fn unset_at(&self, pos: u32) {
         let mask: u32 = 1 << pos;
-        let old_value = self.flags.inner().fetch_and(!mask, Release);
+        let old_value = self.flags.inner().fetch_and(!mask, Ordering::Release);
     }
 
     fn set_masked(&self, mask: u32, new_val: u32) {
         self.flags
             .inner()
-            .fetch_update(Release, Relaxed, |old| Some((old & mask) | new_val))
+            .fetch_update(Ordering::Release, Ordering::Relaxed, |old| {
+                Some((old & mask) | new_val)
+            })
             .unwrap();
     }
 
     pub fn max_count(&self) -> u32 {
-        (self.flags.inner().load(SeqCst) >> Self::MAX_COUNT_SHIFT) & 0x1ff
+        (self.flags.inner().load(Ordering::SeqCst) >> Self::MAX_COUNT_SHIFT) & 0x1ff
     }
 
     pub fn size_class(&self) -> u32 {
-        (self.flags.inner().load(SeqCst) >> Self::SIZE_CLASS_SHIFT) & 0x3f
+        (self.flags.inner().load(Ordering::SeqCst) >> Self::SIZE_CLASS_SHIFT) & 0x3f
     }
 
     pub fn sv_offset(&self) -> u32 {
-        (self.flags.inner().load(SeqCst) >> Self::SHUFFLE_VECTOR_OFFSET_SHIFT) & 0xff
+        (self.flags.inner().load(Ordering::SeqCst) >> Self::SHUFFLE_VECTOR_OFFSET_SHIFT) & 0xff
     }
 
     pub fn freelist_id(&self) -> u32 {
-        (self.flags.inner().load(SeqCst) >> Self::FREELIST_ID_SHIFT) & 0x3
+        (self.flags.inner().load(Ordering::SeqCst) >> Self::FREELIST_ID_SHIFT) & 0x3
     }
 
     pub fn set_meshed(&self) {
@@ -168,7 +167,7 @@ impl Flags {
     }
 
     pub fn is_meshed(&self) -> bool {
-        (self.flags.inner().load(SeqCst) >> Self::MESHED_OFFSET) & 1 == 1
+        (self.flags.inner().load(Ordering::SeqCst) >> Self::MESHED_OFFSET) & 1 == 1
     }
 
     pub fn set_freelist_id(&self, id: u32) {
@@ -203,7 +202,20 @@ impl<T: Heap> AtomicMiniHeapId<T> {
     }
 
     pub fn inner(&mut self) -> *mut T {
-        self.0.load(SeqCst)
+        self.0.load(Ordering::Acquire)
+    }
+
+    pub unsafe fn get(&mut self, index: usize) -> *mut T {
+        let ptr = self.0.get_mut();
+        ptr.add(index)
+    }
+
+    pub fn load(&self, ordering: Ordering) -> *mut T {
+        self.0.load(ordering)
+    }
+
+    pub fn store(&self, value: *mut T, ordering: Ordering) {
+        self.0.store(value, ordering)
     }
 }
 

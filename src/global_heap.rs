@@ -6,7 +6,6 @@ use std::{
 
 use crate::{meshable_arena::MeshableArena, mini_heap::MiniHeap, PAGE_SIZE};
 
-#[derive(Default)]
 pub struct GlobalHeapStats {
     mesh_count: AtomicUsize,
     free_count: usize,
@@ -14,16 +13,14 @@ pub struct GlobalHeapStats {
     high_water_mark: usize,
 }
 
-#[derive(Default)]
 pub struct GlobalHeapShared;
 
-#[derive(Default)]
 pub struct GlobalHeapGuarded {
+    arena: MeshableArena,
     miniheap_count: usize,
     stats: GlobalHeapStats,
 }
 
-#[derive(Default)]
 pub struct GlobalHeap {
     shared: GlobalHeapShared,
     guarded: Mutex<GlobalHeapGuarded>,
@@ -103,10 +100,9 @@ impl GlobalHeapLocked<'_> {
 
         debug_assert!(size_of::<MiniHeap>() <= 64);
         let mh = buf.cast();
-        unsafe { MiniHeap::new_inplace(mh, span, object_count, object_size) }
+        unsafe { MiniHeap::new_inplace(mh, span.clone(), object_count, object_size) }
 
-        let id = unsafe { self.guarded.arena.mh_allocator.offset_for(buf) };
-        unsafe { self.guarded.arena.track_miniheap(span, id) };
+        unsafe { self.guarded.arena.track_miniheap(span, buf.cast()) };
 
         // // mesh::debug("%p (%u) created!\n", mh, GetMiniHeapID(mh));
 

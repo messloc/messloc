@@ -4,7 +4,7 @@ use arrayvec::ArrayVec;
 
 use crate::{PAGE_SIZE, SPAN_CLASS_COUNT};
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Span {
     pub offset: Offset,
     pub length: Length,
@@ -17,11 +17,11 @@ impl Span {
         Span { offset, length }
     }
 
-    pub fn class(self) -> u32 {
+    pub fn class(&self) -> u32 {
         Length::min(self.length, SPAN_CLASS_COUNT) - 1
     }
 
-    pub const fn byte_length(&self) -> usize {
+    pub fn byte_length(&self) -> usize {
         usize::try_from(self.length).unwrap() * PAGE_SIZE
     }
 
@@ -35,7 +35,7 @@ impl Span {
         }
     }
 
-    pub fn is_empty(self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.length == 0
     }
 }
@@ -43,8 +43,12 @@ impl Span {
 pub struct SpanList([ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize]);
 
 impl SpanList {
-    pub fn inner(&self) -> [ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize] {
-        self.0
+    pub fn inner(&self) -> &[ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize] {
+        &self.0
+    }
+
+    pub fn inner_mut(&mut self) -> &mut [ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize] {
+        &mut self.0
     }
 
     pub fn get(&self, index: usize) -> Option<&ArrayVec<Span, 1024>> {
@@ -52,7 +56,7 @@ impl SpanList {
     }
 
     pub fn get_mut(&mut self, index: usize) -> Option<&mut ArrayVec<Span, 1024>> {
-        self.inner().get_mut(index)
+        self.0.get_mut(index)
     }
 
     pub fn len(&self) -> usize {
@@ -63,13 +67,12 @@ impl SpanList {
         let _ = std::mem::take(self);
     }
 
-    pub fn for_each_free<F>(&self, func: F)
+    pub fn for_each_free<F>(&self, mut func: F)
     where
-        F: FnMut(&Span) -> (),
+        F: FnMut(&Span),
     {
-        self.0.iter().for_each(|span_array| {
-            span_array.iter().for_each(|span| func(span));
-        });
+        #[allow(clippy::redundant_closure)]
+        self.0.iter().flatten().for_each(|span| func(span));
     }
 }
 

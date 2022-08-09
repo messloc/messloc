@@ -20,7 +20,9 @@ impl InternalHeap {
 }
 
 impl Heap for InternalHeap {
-    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::int) -> *mut () {
+    type PointerType = *mut ();
+    type MallocType = *mut ();
+    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
         todo!()
     }
 
@@ -89,6 +91,9 @@ pub const fn log2(x: usize) -> u32 {
 }
 
 impl crate::one_way_mmap_heap::Heap for PartitionedHeap {
+    type PointerType = *mut ();
+    type MallocType = *mut ();
+
     unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
         todo!()
     }
@@ -97,7 +102,7 @@ impl crate::one_way_mmap_heap::Heap for PartitionedHeap {
         let size_class = (log2(size.max(8)) - 3) as usize;
 
         if size_class >= PARTITIONED_HEAP_BINS {
-            self.big_heap.malloc(size)
+            self.big_heap.malloc(size).cast()
         } else {
             self.small_heaps[size_class].alloc().cast()
         }

@@ -1,9 +1,11 @@
 use crate::mini_heap::AtomicMiniHeapId;
 use crate::utils::mmap;
+use crate::ARENA_SIZE;
 use crate::{
     one_way_mmap_heap::{Heap, OneWayMmapHeap},
     PAGE_SIZE,
 };
+use std::mem::MaybeUninit;
 use std::{mem::size_of, ptr::null_mut};
 
 pub struct CheapHeap<const ALLOC_SIZE: usize, const MAX_COUNT: usize> {
@@ -50,6 +52,7 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_
 }
 
 impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_SIZE, MAX_COUNT> {
+    type MallocType = [AtomicMiniHeapId<Self>; ARENA_SIZE / PAGE_SIZE];
     type PointerType = AtomicMiniHeapId<Self>;
     unsafe fn map(
         &mut self,
@@ -62,8 +65,17 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_S
         AtomicMiniHeapId::new(ptr as *mut Self)
     }
 
-    unsafe fn malloc(&mut self, size: usize) -> Self::PointerType {
-        AtomicMiniHeapId::new(OneWayMmapHeap.malloc(size).cast())
+    unsafe fn malloc(&mut self, size: usize) -> Self::MallocType {
+        let addr = OneWayMmapHeap.malloc(size) as *mut Self;
+        let mut page_data: [MaybeUninit<AtomicMiniHeapId<Self>>; ARENA_SIZE / PAGE_SIZE] =
+            MaybeUninit::uninit().assume_init();
+
+        (0..=(ARENA_SIZE / PAGE_SIZE)).for_each(|page| {
+            let new_page = addr.add(page as usize);
+            page_data[page].write(AtomicMiniHeapId::new(new_page));
+        });
+
+        std::mem::transmute::<_, Self::MallocType>(page_data)
     }
 
     unsafe fn get_size(&mut self, _: *mut ()) -> usize {
@@ -130,6 +142,9 @@ impl DynCheapHeap {
 }
 
 impl Heap for DynCheapHeap {
+    type PointerType = *mut ();
+    type MallocType = *mut ();
+
     unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
         todo!()
     }

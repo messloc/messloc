@@ -4,7 +4,9 @@
     // missing_debug_implementations,
     // missing_docs,
 )]
-
+#![allow(unused)]
+#![feature(let_chains)]
+#![feature(type_alias_impl_trait)]
 use std::{
     alloc::{GlobalAlloc, Layout},
     ptr::NonNull,

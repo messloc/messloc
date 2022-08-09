@@ -1,24 +1,21 @@
-use libc::c_void;
-
 use crate::arena_fs::open_shm_span_file;
+use crate::bitmap::{Bitmap, BitmapBase, RelaxedBitmapBase};
 use crate::runtime::Runtime;
 use crate::span::{Length, Offset, Span, SpanList};
 use crate::{
-    cheap_heap::CheapHeap,
-    mini_heap::{AtomicMiniHeapId, MiniHeap},
-    one_way_mmap_heap::Heap,
-    ARENA_SIZE, DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT,
+    cheap_heap::CheapHeap, mini_heap::AtomicMiniHeapId, one_way_mmap_heap::Heap, ARENA_SIZE,
+    DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT,
 };
 use std::mem::size_of;
 use std::{
     path::PathBuf,
-    pointer::offset_from,
     ptr::null_mut,
     sync::atomic::Ordering,
     sync::{Arc, Mutex},
 };
 
 use crate::{utils::*, MAP_SHARED};
+use libc::c_void;
 pub type Page = [u8; PAGE_SIZE];
 
 pub struct MeshableArena {
@@ -30,12 +27,12 @@ pub struct MeshableArena {
     dirty: SpanList,
     clean: SpanList,
     freed_spans: SpanList,
-    mh_index: AtomicMiniHeapId<CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>>,
+    mh_index: [AtomicMiniHeapId<CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>>; ARENA_SIZE / PAGE_SIZE],
     pub(crate) mh_allocator: CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>,
-    meshed_bitmap: MeshedBitmap,
+    meshed_bitmap: Bitmap<RelaxedBitmapBase<{ ARENA_SIZE / PAGE_SIZE }>>,
     fork_pipe: [i32; 2],
     span_dir: PathBuf,
-    meshed_page_count_hwm: usize,
+    meshed_page_count_hwm: u64,
 }
 
 impl MeshableArena {
@@ -45,22 +42,23 @@ impl MeshableArena {
 
         let fd = open_shm_span_file(ARENA_SIZE);
 
-        let mh_allocator = CheapHeap::new();
+        let mut mh_allocator = CheapHeap::new();
         let arena_begin =
             unsafe { mh_allocator.map(ARENA_SIZE, MAP_SHARED, fd).inner() as *mut Page };
+
         let mh_index = unsafe { mh_allocator.malloc(index_size()) };
 
         MeshableArena {
             runtime: Arc::new(Mutex::new(Runtime::default())),
+            //TODO:: find initial end value
             arena_begin,
             fd,
-            //TODO:: find initial end value
             end: Offset::default(),
             dirty: SpanList::default(),
             clean: SpanList::default(),
             mh_allocator,
             mh_index,
-            meshed_bitmap: MeshedBitmap::default(),
+            meshed_bitmap: Bitmap::default(),
             freed_spans: SpanList::default(),
             fork_pipe: [-1, -1],
             span_dir: PathBuf::default(),
@@ -159,7 +157,7 @@ impl MeshableArena {
         //     abort();
         //   }
 
-        self.clean.inner()[expansion.class() as usize].push(expansion)
+        self.clean.inner_mut()[expansion.class() as usize].push(expansion)
 
         //   _clean[expansion.spanClass()].push_back(expansion);
     }
@@ -172,6 +170,7 @@ impl MeshableArena {
             offset: 0,
             length: page_count,
         };
+
         for span_class in span.class()..SPAN_CLASS_COUNT {
             if let Some(span) = Self::find_pages_inner(&mut self.dirty, span_class, page_count) {
                 return Some((span, PageType::Dirty));
@@ -194,7 +193,7 @@ impl MeshableArena {
         span_class: u32,
         page_count: u32,
     ) -> Option<Span> {
-        let spans = &mut free_spans.get(span_class as usize).unwrap();
+        let spans = free_spans.get_mut(span_class as usize).unwrap();
         if spans.is_empty() {
             return None;
         }
@@ -206,18 +205,17 @@ impl MeshableArena {
             // the final span class contains (and is the only class to
             // contain) variable-size spans, so we need to make sure we
             // search through all candidates in this case.
-            for j in 0..end {
-                if spans[j].length >= page_count {
-                    spans.swap(j, end);
-                    break;
-                }
-            }
 
-            // check that we found something in the above loop. this would be
-            // our last loop iteration anyway
-            if spans[end].length < page_count {
+            let mut iter = spans
+                .iter_mut()
+                .enumerate()
+                .skip_while(|(_, span)| span.length < page_count);
+
+            if let Some((j, _)) = iter.next() {
+                spans.swap(j, end);
+            } else {
                 return None;
-            }
+            };
         }
 
         let mut span = spans.pop().unwrap();
@@ -236,48 +234,69 @@ impl MeshableArena {
         // put the part we don't need back in the reuse pile
         let rest = span.split_after(page_count);
         if !rest.is_empty() {
-            free_spans[rest.class() as usize].push(rest);
+            free_spans
+                .get_mut(rest.class() as usize)
+                .unwrap()
+                .push(rest);
         }
         debug_assert_eq!(span.length, page_count);
 
         Some(span)
     }
 
-    pub unsafe fn track_miniheap(&mut self, span: Span, id: u32) {
+    pub unsafe fn track_miniheap(
+        &mut self,
+        span: Span,
+        id: *mut CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>,
+    ) {
         for i in 0..span.length {
             self.set_index((span.offset + i) as usize, id)
         }
     }
 
-    pub unsafe fn set_index(&mut self, offset: usize, id: u32) {
-        (&*self.mh_index.add(offset)).store(id, Ordering::Release);
+    pub unsafe fn set_index(
+        &mut self,
+        offset: usize,
+        id: *mut CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>,
+    ) {
+        self.mh_index
+            .get(offset)
+            .unwrap()
+            .store(id, Ordering::Release);
     }
 
-    fn scavenge(&self, force: bool) {
+    fn scavenge(&mut self, force: bool) {
         if force && self.dirty.len() < DIRTY_PAGE_THRESHOLD {
-            let mut bitmap = Bitmap::new();
+            let mut bitmap: Bitmap<RelaxedBitmapBase<{ ARENA_SIZE / PAGE_SIZE }>> =
+                Bitmap::default();
+
             bitmap.invert();
 
-            self.freed_spans.iter().for_each(|span_list| {
+            self.freed_spans.inner().iter().for_each(|span_list| {
                 span_list.iter().enumerate().for_each(|(key, span)| {
                     self.meshed_bitmap.unset(span.offset as usize + key);
-                    (0..=span.length).for_each(|k| bitmap.try_set(span.offset + k));
-                    self.meshed_bitmap.reset_span_mapping(span);
+                    (0..=span.length).for_each(|k| {
+                        bitmap.try_to_set(usize::try_from(span.offset + k).unwrap());
+                    });
+                    let ptr =
+                        unsafe { self.arena_begin.add(usize::try_from(span.offset).unwrap()) };
+                    reset_span_mapping(ptr as *mut c_void, self.fd, span);
                 })
             });
 
             self.freed_spans.clear();
 
-            let page_count = self.mashed_bitmap.in_use_count();
+            let page_count = self.meshed_bitmap.in_use_count();
             if page_count > self.meshed_page_count_hwm {
                 self.meshed_page_count_hwm = page_count;
             }
 
-            for_each_free(self.dirty, |span| {
-                let ptr = unsafe { self.arena_begin.add(span.offset) };
+            self.dirty.for_each_free(|span| {
                 let size = span.byte_length();
-                self.free_physical(ptr, span.offset as usize, size);
-                (0..=span.length).for_each(|k| bitmap.try_set(span.offset + k));
+                free_physical(self.fd, span.offset as usize, size);
+                (0..=span.length).for_each(|k| {
+                    bitmap.try_to_set(usize::try_from(span.offset + k).unwrap());
+                })
             });
 
             self.dirty.clear();
@@ -287,65 +306,50 @@ impl MeshableArena {
         }
     }
 
-    fn coalesce(&self, bitmap: Bitmap) {
-        let current = Span::default();
-        for i in bitmap.iter() {
-            if i == current.offset + current.length {
+    fn coalesce<const N: usize>(&mut self, bitmap: Bitmap<RelaxedBitmapBase<N>>) {
+        let mut current = Span::default();
+        for i in bitmap.inner().iter() {
+            if i == (current.offset + current.length) as u64 {
                 current.length += 1;
                 continue;
             }
 
             if !current.is_empty() {
                 self.clean
-                    .inner()
+                    .inner_mut()
                     .get_mut(current.class() as usize)
                     .unwrap()
                     .push(current);
             }
 
-            current = Span::new(i, 1);
+            current = Span::new(u32::try_from(i).unwrap(), 1);
         }
     }
 
-    fn free_physical(&self, ptr: *mut [u8], offset: usize, size: usize) {
-        let ptr = unsafe { self.arena_begin.add(offset) };
-
-        assert!(size / crate::PAGE_SIZE > 0);
-        assert!(size % crate::PAGE_SIZE > 0);
-
-        //TODO:: add check for if meshing is enabled or not
-        let _ = unsafe { fallocate(self.fd, offset, size) };
-    }
-
-    fn partial_scavenge(&self) {
+    fn partial_scavenge(&mut self) {
         self.dirty.for_each_free(|span| {
             let ptr = unsafe { self.arena_begin.add(span.offset as usize) };
             let size = span.byte_length();
-            unsafe { madvise(ptr as *mut c_void, size) };
-            self.free_physical(ptr, span.offset as usize, size);
+            unsafe { madvise(ptr as *mut libc::c_void, size) }.unwrap();
+            free_physical(self.fd, span.offset as usize, size);
             self.clean
                 .get_mut(span.class() as usize)
                 .unwrap()
-                .push(*span);
+                .push(span.clone());
         });
 
         self.dirty.clear();
     }
 
     fn begin_mesh(&self, remove: *mut [u8], size: usize) {
-        let _ = unsafe { mprotect_read(remove as *mut c_void, size).unwrap() };
+        unsafe { mprotect_read(remove as *mut c_void, size).unwrap() };
     }
 
-    fn finalise_mesh(&self, keep: *mut (), remove: *mut (), size: usize) {
+    fn finalise_mesh(&mut self, keep: *mut (), remove: *mut (), size: usize) {
         let keep_offset = unsafe { keep.offset_from(self.arena_begin as *mut ()) };
         let remove_offset = unsafe { remove.offset_from(self.arena_begin as *mut ()) };
         let page_count = size / PAGE_SIZE;
-        let keep_id = self
-            .mh_index
-            .get(usize::try_from(keep_offset).unwrap())
-            .unwrap()
-            .load(Ordering::Acquire);
-        self.store_indices(keep_id, remove_offset, page_count);
+        self.store_indices(usize::try_from(keep_offset).unwrap(), page_count);
         let removed_span = Span::new(
             u32::try_from(remove_offset).unwrap(),
             u32::try_from(page_count).unwrap(),
@@ -360,8 +364,8 @@ impl MeshableArena {
             )
         };
     }
-
-    fn store_indices(&self, keep_id: u32, offset: isize, page_count: usize) {
+    fn store_indices(&mut self, keep_offset: usize, page_count: usize) {
+        let keep_id = unsafe { self.mh_index.get_mut(keep_offset).unwrap().get(keep_offset) };
         (0..page_count).for_each(|index| {
             self.mh_index
                 .get(index)
@@ -370,13 +374,31 @@ impl MeshableArena {
         });
     }
 
-    fn mini_heap_for_arena_offset(&self, arena_offset: usize) -> Option<MiniHeap> {
-        let mh_offset = self
-            .mh_index
+    fn mini_heap_for_arena_offset(&self, arena_offset: usize) -> *mut () {
+        self.mh_index
             .get(arena_offset)
             .unwrap()
-            .load(Ordering::Acquire);
-        self.mh_allocator.get(mh_offset)
+            .load(Ordering::Acquire)
+            .cast()
+    }
+}
+fn free_physical(fd: i32, offset: usize, size: usize) {
+    assert!(size / crate::PAGE_SIZE > 0);
+    assert!(size % crate::PAGE_SIZE > 0);
+
+    //TODO:: add check for if meshing is enabled or not
+    let _ = unsafe { fallocate(fd, offset, size) };
+}
+
+fn reset_span_mapping(ptr: *mut c_void, fd: i32, span: &Span) {
+    unsafe {
+        let _ = mmap(
+            ptr,
+            fd,
+            span.byte_length(),
+            usize::try_from(span.offset).unwrap() * PAGE_SIZE,
+        )
+        .unwrap();
     }
 }
 

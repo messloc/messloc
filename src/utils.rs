@@ -6,7 +6,7 @@ use libc::{
 use std::io::{Error, Result};
 use std::mem::MaybeUninit;
 use std::os::unix::prelude::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub unsafe fn madvise(ptr: *mut c_void, size: usize) -> Result<()> {
     OutputWrapper(libc::madvise(ptr, size, MADV_DONTNEED)).into()
@@ -37,8 +37,8 @@ pub unsafe fn mmap(addr: *mut c_void, fd: i32, size: usize, offset: usize) -> Re
     }
 }
 
-pub unsafe fn mkstemp(file_path: &Path) -> Result<i32> {
-    let res = libc::mkstemp(file_path.as_os_str().as_bytes().as_mut_ptr() as *mut c_char);
+pub unsafe fn mkstemp(file_path: *mut c_char) -> Result<i32> {
+    let res = libc::mkstemp(file_path);
 
     if res >= 0 {
         Ok(res)
@@ -47,11 +47,8 @@ pub unsafe fn mkstemp(file_path: &Path) -> Result<i32> {
     }
 }
 
-pub unsafe fn unlink(file_path: &Path) -> Result<()> {
-    OutputWrapper(libc::unlink(
-        file_path.as_os_str().as_bytes().as_mut_ptr() as *mut c_char
-    ))
-    .into()
+pub unsafe fn unlink(file_path: *mut c_char) -> Result<()> {
+    OutputWrapper(libc::unlink(file_path)).into()
 }
 
 pub unsafe fn fallocate(fd: i32, offset: usize, len: usize) -> Result<()> {
@@ -72,7 +69,7 @@ pub unsafe fn fcntl(fd: i32) -> Result<()> {
     OutputWrapper(libc::fcntl(fd, F_SETFD)).into()
 }
 
-pub unsafe fn pipe(fork_pipe: [i32; 2]) -> Result<()> {
+pub unsafe fn pipe(mut fork_pipe: [i32; 2]) -> Result<()> {
     OutputWrapper(libc::pipe(fork_pipe.as_mut_ptr())).into()
 }
 
@@ -91,7 +88,7 @@ pub unsafe fn read(fd: i32, buf: *mut c_void, len: usize) -> Result<()> {
 }
 
 pub unsafe fn wait_till_memory_ready(fd: i32) {
-    let buf = [0u8; 4];
+    let mut buf = [0u8; 4];
     loop {
         if read(fd, buf.as_mut_ptr() as *mut c_void, 4).is_ok() {
             break;
@@ -112,13 +109,29 @@ pub unsafe fn pthread_atfork(
 #[derive(Clone)]
 pub struct Stat(libc::stat);
 
-pub unsafe fn fstat(fildes: i32, buf: &MaybeUninit<Stat>) -> Result<()> {
+pub unsafe fn fstat(fildes: i32, buf: &mut MaybeUninit<Stat>) -> Result<()> {
     // FIXME:: check if this is UB or not
     OutputWrapper(libc::fstat(
         fildes,
         &mut buf.assume_init_mut().0 as *mut libc::stat,
     ))
     .into()
+}
+
+pub fn popcountl(bit: u64) -> u64 {
+    todo!()
+}
+
+pub fn ffsll(bits: u64) -> u64 {
+    todo!()
+}
+
+pub const fn stlog(input: usize) -> usize {
+    match input {
+        1 => 0,
+        2 => 1,
+        _ => stlog(input / 2) + 1,
+    }
 }
 
 struct OutputWrapper(pub i32);

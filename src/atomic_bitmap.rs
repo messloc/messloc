@@ -20,10 +20,10 @@ impl AtomicBitmap256 {
         } = from;
         AtomicBitmap256 {
             bits: [
-                Comparatomic::new(s0.inner().swap(f0.inner().into_inner(), AcqRel)),
-                Comparatomic::new(s1.inner().swap(f1.inner().into_inner(), AcqRel)),
-                Comparatomic::new(s2.inner().swap(f2.inner().into_inner(), AcqRel)),
-                Comparatomic::new(s3.inner().swap(f3.inner().into_inner(), AcqRel)),
+                Comparatomic::new(s0.inner().swap(f0.into_inner().into_inner(), AcqRel)),
+                Comparatomic::new(s1.inner().swap(f1.into_inner().into_inner(), AcqRel)),
+                Comparatomic::new(s2.inner().swap(f2.into_inner().into_inner(), AcqRel)),
+                Comparatomic::new(s3.inner().swap(f3.into_inner().into_inner(), AcqRel)),
             ],
         }
     }

@@ -11,13 +11,17 @@ where
         Comparatomic(T::make(input))
     }
 
-    pub fn inner(&self) -> T {
+    pub fn inner(&self) -> &T {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> T {
         self.0
     }
 }
 
-trait Atomic: Sized {
-    type Innermost: PartialEq + std::fmt::Debug;
+pub trait Atomic: Sized {
+    type Innermost: PartialEq + std::fmt::Debug + Copy;
     fn make(input: Self::Innermost) -> Self;
     fn cas(
         &self,

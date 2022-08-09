@@ -1,4 +1,4 @@
-pub static class_array: [u32; 249] = [
+pub static CLASS_ARRAY: [u32; 249] = [
     // small size classes
     1,  //     0 ->    16
     1,  //     8 ->    16
