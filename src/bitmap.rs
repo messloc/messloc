@@ -1,5 +1,7 @@
+use crate::comparatomic::{Atomic, Comparatomic};
 use crate::span::Span;
 use crate::utils::{ffsll, popcountl, stlog};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_BIT_COUNT: u64 = u64::MAX;
 const BYTE_SIZE: usize = std::mem::size_of::<usize>();
@@ -14,7 +16,7 @@ const fn get_mask(pos: usize) -> usize {
     1usize >> pos
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct RelaxedBitmapBase<const N: usize> {
     bits: [u64; N],
 }
@@ -71,17 +73,17 @@ impl<const N: usize> Default for RelaxedBitmapBase<N> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default, PartialEq)]
 pub struct Bitmap<T>
 where
-    T: BitmapBase + std::fmt::Debug + Default,
+    T: BitmapBase + PartialEq,
 {
     internal_type: T,
 }
 
 impl<T> Bitmap<T>
 where
-    T: BitmapBase + std::fmt::Debug + Default,
+    T: BitmapBase + PartialEq,
 {
     pub fn inner(&self) -> &T {
         &self.internal_type
@@ -155,21 +157,42 @@ where
         (item, position)
     }
 }
-pub trait BitmapBase {
-    type IterType: IntoIterator<Item = u64>;
+
+impl Bitmap<AtomicBitmapBase<4>> {
+    pub fn set_and_exchange_all(&self) -> [Comparatomic<AtomicU64>; 4] {
+        let mut result = [
+            Comparatomic::new(0),
+            Comparatomic::new(0),
+            Comparatomic::new(0),
+            Comparatomic::new(0),
+        ];
+
+        self.internal_type
+            .bits
+            .iter()
+            .enumerate()
+            .for_each(|(i, old)| {
+                result[i] = Comparatomic::new(old.inner().swap(0u64, Ordering::AcqRel));
+            });
+        result
+    }
+}
+
+pub trait BitmapBase: PartialEq {
+    type Item;
+    fn bits(&self) -> &[Self::Item];
     fn get_bit(&self, num: usize) -> Option<u64>;
     fn set_at(&mut self, at: usize, position: usize) -> bool;
     fn bit_count(&self) -> usize;
     fn unset_at(&mut self, item: usize, position: usize) -> bool;
-    fn iter(&self) -> Self::IterType;
     fn invert(&mut self);
     fn in_use_count(&self) -> u64;
 }
 
 impl<const N: usize> BitmapBase for RelaxedBitmapBase<N> {
-    type IterType = impl IntoIterator<Item = u64>;
-    fn iter(&self) -> Self::IterType {
-        self.bits.into_iter()
+    type Item = u64;
+    fn bits(&self) -> &[Self::Item] {
+        &self.bits
     }
 
     fn get_bit(&self, num: usize) -> Option<u64> {
@@ -194,5 +217,59 @@ impl<const N: usize> BitmapBase for RelaxedBitmapBase<N> {
 
     fn in_use_count(&self) -> u64 {
         self.in_use_count()
+    }
+}
+
+#[derive(PartialEq)]
+pub struct AtomicBitmapBase<const N: usize> {
+    bits: [Comparatomic<AtomicU64>; N],
+}
+
+impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
+    type Item = Comparatomic<AtomicU64>;
+
+    fn bits(&self) -> &[Self::Item] {
+        &self.bits
+    }
+
+    fn get_bit(&self, num: usize) -> Option<u64> {
+        self.bits.get(num).map(|b| b.load(Ordering::Acquire))
+    }
+
+    fn set_at(&mut self, at: usize, position: usize) -> bool {
+        self.set_at(at, position)
+    }
+
+    fn unset_at(&mut self, at: usize, position: usize) -> bool {
+        self.unset_at(at, position)
+    }
+
+    fn bit_count(&self) -> usize {
+        N
+    }
+
+    fn invert(&mut self) {
+        self.invert()
+    }
+
+    fn in_use_count(&self) -> u64 {
+        self.in_use_count()
+    }
+}
+
+impl Default for Bitmap<AtomicBitmapBase<4>> {
+    fn default() -> Self {
+        Bitmap {
+            internal_type: {
+                AtomicBitmapBase {
+                    bits: [
+                        Comparatomic::new(0u64),
+                        Comparatomic::new(0u64),
+                        Comparatomic::new(0u64),
+                        Comparatomic::new(0u64),
+                    ],
+                }
+            },
+        }
     }
 }

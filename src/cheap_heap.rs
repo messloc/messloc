@@ -1,4 +1,4 @@
-use crate::mini_heap::AtomicMiniHeapId;
+use crate::mini_heap::{AtomicMiniHeapId, MiniHeap};
 use crate::utils::mmap;
 use crate::ARENA_SIZE;
 use crate::{
@@ -6,6 +6,7 @@ use crate::{
     PAGE_SIZE,
 };
 use std::mem::MaybeUninit;
+use std::sync::atomic::Ordering;
 use std::{mem::size_of, ptr::null_mut};
 
 pub struct CheapHeap<const ALLOC_SIZE: usize, const MAX_COUNT: usize> {
@@ -30,6 +31,12 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_
                 .cast()
         };
         this
+    }
+
+    pub unsafe fn get_mut(&self, id: AtomicMiniHeapId<MiniHeap>) -> *mut MiniHeap {
+        let value = id.load(Ordering::SeqCst);
+
+        *value.cast()
     }
 
     pub unsafe fn alloc(&mut self) -> *mut [u8; ALLOC_SIZE] {

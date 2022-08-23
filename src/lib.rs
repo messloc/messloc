@@ -5,10 +5,12 @@
     // missing_docs,
 )]
 #![allow(unused)]
-#![feature(let_chains)]
 #![feature(type_alias_impl_trait)]
+#![feature(once_cell)]
+
 use std::{
     alloc::{GlobalAlloc, Layout},
+    cell::OnceCell,
     ptr::NonNull,
 };
 
@@ -16,7 +18,6 @@ use std::{
 use std::alloc::{AllocError, Allocator};
 
 mod arena_fs;
-mod atomic_bitmap;
 mod bitmap;
 mod cheap_heap;
 mod class_array;
@@ -29,6 +30,7 @@ mod mmap_heap;
 mod one_way_mmap_heap;
 mod runtime;
 mod span;
+mod splits;
 mod utils;
 
 const PAGE_SIZE: usize = 4096;
@@ -43,6 +45,14 @@ const MIN_ARENA_EXPANSION: usize = 4096; // 16 MB in pages
 const MAX_SMALL_SIZE: usize = 1024;
 const MAP_SHARED: i32 = 1;
 const DIRTY_PAGE_THRESHOLD: usize = 32;
+const MAX_MESHES: usize = 256;
+const MAX_MERGE_SETS: usize = 4096;
+const MAX_SPLIT_LIST_SIZE: usize = 16384;
+const NUM_BINS: usize = 25;
+const DEFAULT_MAX_MESH_COUNT: usize = 30000;
+const MAX_MESHES_PER_ITERATION: usize = 2500;
+const OCCUPANCY_CUTOFF: f64 = 0.8;
+const BINNED_TRACKER_MAX_EMPTY: usize = 128;
 
 pub struct Messloc {}
 

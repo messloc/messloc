@@ -3,8 +3,11 @@ use crate::bitmap::{Bitmap, BitmapBase, RelaxedBitmapBase};
 use crate::runtime::Runtime;
 use crate::span::{Length, Offset, Span, SpanList};
 use crate::{
-    cheap_heap::CheapHeap, mini_heap::AtomicMiniHeapId, one_way_mmap_heap::Heap, ARENA_SIZE,
-    DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE, SPAN_CLASS_COUNT,
+    cheap_heap::CheapHeap,
+    mini_heap::{AtomicMiniHeapId, MiniHeap},
+    one_way_mmap_heap::Heap,
+    ARENA_SIZE, DEFAULT_MAX_MESH_COUNT, DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE,
+    SPAN_CLASS_COUNT,
 };
 use std::mem::size_of;
 use std::{
@@ -18,8 +21,8 @@ use crate::{utils::*, MAP_SHARED};
 use libc::c_void;
 pub type Page = [u8; PAGE_SIZE];
 
-pub struct MeshableArena {
-    pub runtime: Arc<Mutex<Runtime>>,
+pub struct MeshableArena<'a> {
+    pub runtime: Arc<Mutex<Runtime<'a>>>,
     pub(crate) arena_begin: *mut Page,
     fd: i32,
     /// offset in pages
@@ -33,10 +36,11 @@ pub struct MeshableArena {
     fork_pipe: [i32; 2],
     span_dir: PathBuf,
     meshed_page_count_hwm: u64,
+    max_mesh_count: usize,
 }
 
-impl MeshableArena {
-    pub fn init() -> MeshableArena {
+impl<'a> MeshableArena<'a> {
+    pub fn init() -> MeshableArena<'a> {
         // TODO: check if meshing enabled
         //TODO: initialise stuff from the constructor
 
@@ -49,7 +53,7 @@ impl MeshableArena {
         let mh_index = unsafe { mh_allocator.malloc(index_size()) };
 
         MeshableArena {
-            runtime: Arc::new(Mutex::new(Runtime::default())),
+            runtime: Arc::new(Mutex::new(Runtime::init())),
             //TODO:: find initial end value
             arena_begin,
             fd,
@@ -63,6 +67,7 @@ impl MeshableArena {
             fork_pipe: [-1, -1],
             span_dir: PathBuf::default(),
             meshed_page_count_hwm: 0,
+            max_mesh_count: DEFAULT_MAX_MESH_COUNT,
         }
     }
 
@@ -265,7 +270,7 @@ impl MeshableArena {
             .store(id, Ordering::Release);
     }
 
-    fn scavenge(&mut self, force: bool) {
+    pub fn scavenge(&mut self, force: bool) {
         if force && self.dirty.len() < DIRTY_PAGE_THRESHOLD {
             let mut bitmap: Bitmap<RelaxedBitmapBase<{ ARENA_SIZE / PAGE_SIZE }>> =
                 Bitmap::default();
@@ -308,8 +313,8 @@ impl MeshableArena {
 
     fn coalesce<const N: usize>(&mut self, bitmap: Bitmap<RelaxedBitmapBase<N>>) {
         let mut current = Span::default();
-        for i in bitmap.inner().iter() {
-            if i == (current.offset + current.length) as u64 {
+        for i in bitmap.inner().bits().iter() {
+            if *i == (current.offset + current.length) as u64 {
                 current.length += 1;
                 continue;
             }
@@ -322,7 +327,7 @@ impl MeshableArena {
                     .push(current);
             }
 
-            current = Span::new(u32::try_from(i).unwrap(), 1);
+            current = Span::new(u32::try_from(*i).unwrap(), 1);
         }
     }
 
@@ -341,8 +346,8 @@ impl MeshableArena {
         self.dirty.clear();
     }
 
-    fn begin_mesh(&self, remove: *mut [u8], size: usize) {
-        unsafe { mprotect_read(remove as *mut c_void, size).unwrap() };
+    pub fn begin_mesh(&self, remove: *mut c_void, size: usize) {
+        unsafe { mprotect_read(remove, size).unwrap() };
     }
 
     fn finalise_mesh(&mut self, keep: *mut (), remove: *mut (), size: usize) {
@@ -374,12 +379,27 @@ impl MeshableArena {
         });
     }
 
-    fn mini_heap_for_arena_offset(&self, arena_offset: usize) -> *mut () {
+    fn mini_heap_for_arena_offset(&self, arena_offset: usize) -> *mut MiniHeap {
         self.mh_index
             .get(arena_offset)
             .unwrap()
             .load(Ordering::Acquire)
             .cast()
+    }
+
+    pub fn lookup_mini_heap(&self, ptr: *mut ()) -> *mut MiniHeap {
+        let offset = unsafe { ptr.offset_from(self.arena_begin as *mut ()) } as usize;
+        self.mini_heap_for_arena_offset(offset)
+    }
+
+    pub fn mini_heap_for_id(&self, id: AtomicMiniHeapId<MiniHeap>) -> *mut MiniHeap {
+        let mh = unsafe { self.mh_allocator.get_mut(id) };
+        builtin_prefetch(mh as *mut ());
+        mh
+    }
+
+    pub fn above_mesh_threshold(&self) -> bool {
+        self.meshed_bitmap.in_use_count() > self.max_mesh_count as u64
     }
 }
 fn free_physical(fd: i32, offset: usize, size: usize) {
@@ -407,7 +427,7 @@ const fn index_size() -> usize {
 }
 
 #[derive(PartialEq, Debug, Clone, Copy)]
-enum PageType {
+pub enum PageType {
     Clean = 0,
     Dirty = 1,
     Meshed = 2,

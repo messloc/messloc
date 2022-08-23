@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 #[derive(Default)]
 pub struct Comparatomic<T: Atomic>(T);
@@ -18,6 +18,14 @@ where
     pub fn into_inner(self) -> T {
         self.0
     }
+
+    pub fn load(&self, ordering: Ordering) -> T::Innermost {
+        self.0.load_value(ordering)
+    }
+
+    pub fn store(&self, value: T::Innermost, ordering: Ordering) {
+        self.0.store_value(value, ordering)
+    }
 }
 
 pub trait Atomic: Sized {
@@ -30,7 +38,9 @@ pub trait Atomic: Sized {
         success: Ordering,
         failure: Ordering,
     ) -> Result<Self::Innermost, Self::Innermost>;
+
     fn load_value(&self, ordering: Ordering) -> Self::Innermost;
+    fn store_value(&self, value: Self::Innermost, ordering: Ordering);
 }
 impl<T> PartialEq<Comparatomic<T>> for Comparatomic<T>
 where
@@ -70,6 +80,10 @@ impl Atomic for AtomicU64 {
     fn load_value(&self, ordering: Ordering) -> u64 {
         self.load(ordering)
     }
+
+    fn store_value(&self, value: Self::Innermost, ordering: Ordering) {
+        self.store_value(value, ordering);
+    }
 }
 
 impl Atomic for AtomicU32 {
@@ -90,5 +104,33 @@ impl Atomic for AtomicU32 {
 
     fn load_value(&self, ordering: Ordering) -> u32 {
         self.load(ordering)
+    }
+
+    fn store_value(&self, value: Self::Innermost, ordering: Ordering) {
+        self.store_value(value, ordering);
+    }
+}
+impl<T> Atomic for AtomicPtr<T> {
+    type Innermost = *mut T;
+    fn make(input: Self::Innermost) -> AtomicPtr<T> {
+        AtomicPtr::new(input)
+    }
+
+    fn cas(
+        &self,
+        current: Self::Innermost,
+        new: Self::Innermost,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<*mut T, *mut T> {
+        self.compare_exchange(current, new, success, failure)
+    }
+
+    fn load_value(&self, ordering: Ordering) -> *mut T {
+        self.load(ordering)
+    }
+
+    fn store_value(&self, value: Self::Innermost, ordering: Ordering) {
+        self.store_value(value, ordering);
     }
 }

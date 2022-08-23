@@ -126,6 +126,10 @@ pub fn ffsll(bits: u64) -> u64 {
     todo!()
 }
 
+pub fn builtin_prefetch(memory: *mut ()) {
+    todo!()
+}
+
 pub const fn stlog(input: usize) -> usize {
     match input {
         1 => 0,

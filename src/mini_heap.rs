@@ -1,50 +1,44 @@
 use std::{
-    ptr::{addr_of_mut, null_mut},
-    sync::atomic::{AtomicPtr, AtomicU32, Ordering},
+    ptr::{addr_of_mut, copy_nonoverlapping, null_mut},
+    sync::{
+        atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use libc::c_void;
 
 use crate::{
-    atomic_bitmap::AtomicBitmap256, class_array::CLASS_ARRAY, comparatomic::Comparatomic,
-    one_way_mmap_heap::Heap, span::Span, MAX_SMALL_SIZE, PAGE_SIZE,
+    bitmap::{AtomicBitmapBase, Bitmap, BitmapBase, RelaxedBitmapBase},
+    class_array::CLASS_ARRAY,
+    comparatomic::Comparatomic,
+    one_way_mmap_heap::Heap,
+    rabbit_hole::RabbitHole,
+    runtime::Runtime,
+    span::Span,
+    MAX_SMALL_SIZE, PAGE_SIZE,
 };
 
-#[derive(PartialEq, Default)]
-pub struct MiniHeap {
-    bitmap: AtomicBitmap256,
+#[derive(PartialEq)]
+pub struct MiniHeap<'a> {
+    id: u64,
+    runtime: Runtime<'a>,
+    object_size: usize,
+    bitmap: Bitmap<AtomicBitmapBase<4>>,
     span: Span,
     //   internal::Bitmap _bitmap;           // 32 bytes 32
     //   const Span _span;                   // 8        40
-    //   MiniHeapListEntry _freelist{};      // 8        48
+    //   MiniHeapListEntry _free;list{};      // 8        48
     //   atomic<pid_t> _current{0};          // 4        52
     //   Flags _flags;                       // 4        56
     flags: Flags,
     object_size_reciprocal: f32, // 4        60
-                                 //   MiniHeapID _nextMeshed{};           // 4        64
+    //   MiniHeapID _nextMeshed{};           // 4        64
+    current: Comparatomic<AtomicU64>,
+    next_mashed: Option<AtomicMiniHeapId<MiniHeap<'a>>>,
 }
 
-#[repr(u32)]
-pub enum FreelistId {
-    Full = 0,
-    Partial = 1,
-    Empty = 2,
-    Attached = 3,
-    Max = 4,
-}
-
-fn class_index(size: usize) -> usize {
-    if size <= MAX_SMALL_SIZE {
-        (size + 7) >> 3
-    } else {
-        (size + 127 + (120 << 7)) >> 7
-    }
-}
-fn size_class(size: usize) -> u32 {
-    CLASS_ARRAY[class_index(size)]
-}
-
-impl MiniHeap {
+impl<'a> MiniHeap<'a> {
     // creates the MiniHeap at the location of the pointer
     pub unsafe fn new_inplace(
         this: *mut Self,
@@ -54,7 +48,7 @@ impl MiniHeap {
     ) {
         addr_of_mut!((*this).span).write(span);
         addr_of_mut!((*this).object_size_reciprocal).write((object_size as f32).recip());
-        addr_of_mut!((*this).bitmap).write(AtomicBitmap256::default());
+        addr_of_mut!((*this).bitmap).write(Bitmap::<AtomicBitmapBase<4>>::default());
         addr_of_mut!((*this).flags).write(Flags::new(
             object_count as u32,
             if object_count > 1 {
@@ -63,14 +57,25 @@ impl MiniHeap {
                 1
             },
             0,
-            FreelistId::Attached as u32,
+            FreeListId::Attached as u32,
         ));
     }
 
-    pub fn max_count(&self) -> u32 {
-        todo!()
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
+    pub fn get_mini_heap(&self, id: AtomicMiniHeapId<MiniHeap<'_>>) -> *mut MiniHeap<'_> {
+        self.runtime.global_heap().mini_heap_for_id(id)
+    }
+
+    pub fn get_mini_heap_id(&self, miniheap: *mut ()) -> *mut MiniHeap<'a> {
+        self.runtime.global_heap().mini_heap_for(miniheap)
+    }
+
+    pub const fn max_count(&self) -> u32 {
+        todo!()
+    }
     pub fn span_size(&self) -> usize {
         self.span.byte_length()
     }
@@ -79,8 +84,12 @@ impl MiniHeap {
         self.max_count() == 1
     }
 
+    pub fn bitmap(&self) -> &Bitmap<AtomicBitmapBase<4>> {
+        &self.bitmap
+    }
+
     pub unsafe fn malloc_at(&self, arena: *mut [u8; PAGE_SIZE], offset: usize) -> *mut () {
-        if !self.bitmap.try_to_set(offset as u64) {
+        if !self.bitmap.try_to_set(offset) {
             null_mut()
         } else {
             let object_size = if self.is_large_alloc() {
@@ -96,9 +105,189 @@ impl MiniHeap {
         }
     }
 
-    pub unsafe fn get_span_start(&self, addr: *mut crate::meshable_arena::Page) -> *mut c_void {
+    pub fn consume(&self, mut src: &MiniHeap<'a>) {
+        // TODO: consider taking an owned miniheap
+        assert!(src != self);
+        assert_eq!(self.object_size, src.object_size);
+
+        src.set_meshed();
+        let begin = ((*self.runtime.lock().unwrap())
+            .global_heap
+            .guarded
+            .lock()
+            .unwrap())
+        .arena
+        .arena_begin;
+        let src_span = unsafe { src.get_span_start(begin as *mut ()) };
+        src.take_bitmap().iter().for_each(|off| {
+            assert!(!self.bitmap.is_set(off));
+
+            let offset = off.load(Ordering::AcqRel) as usize;
+            unsafe {
+                let src_object = unsafe { src_span.add(offset) };
+                let dst_object = self.malloc_at(begin.cast(), offset);
+                copy_nonoverlapping(src_object, dst_object as *mut c_void, self.object_size);
+            }
+        });
+        self.track_meshed_span(self.get_mini_heap_id(src as *const MiniHeap<'_> as *mut ()));
+    }
+
+    pub fn track_meshed_span(&self, src: *mut MiniHeap<'_>) {
+        if let Some(mesh) = self.next_mashed {
+            unsafe {
+                self.get_mini_heap(mesh)
+                    .as_ref()
+                    .unwrap()
+                    .track_meshed_span(src);
+            }
+        } else {
+            self.next_mashed = Some(AtomicMiniHeapId::new(src));
+        }
+    }
+
+    pub unsafe fn get_span_start(&self, addr: *mut ()) -> *mut c_void {
         addr.add(self.span.length as usize * PAGE_SIZE) as *mut c_void
     }
+
+    pub fn in_use_count(&self) -> usize {
+        self.bitmap.inner().in_use_count() as usize
+    }
+
+    pub fn clear_if_not_free(&self, offset: usize) -> bool {
+        !self.bitmap.inner().unset(offset)
+    }
+
+    pub fn set_meshed(&self) {
+        self.flags.set(Flags::MESHED_OFFSET);
+    }
+
+    pub fn is_attached(&self) -> bool {
+        self.current() != 0
+    }
+
+    pub fn is_meshed(&self) -> bool {
+        self.flags.is_meshed()
+    }
+
+    pub fn get_free_list(&self) -> MiniHeapListEntry {
+        &self.free_list
+    }
+
+    pub fn current(&self) -> u64 {
+        self.current.load(Ordering::Acquire)
+    }
+
+    pub fn free_list_id(&self) -> FreeListId {
+        self.flags.free_list_id()
+    }
+
+    pub fn size_class(&self) -> u32 {
+        self.flags.size_class()
+    }
+
+    pub fn is_meshing_candidate(&self) -> bool {
+        self.is_attached() && self.object_size < PAGE_SIZE
+    }
+
+    pub fn fullness(&self) -> f64 {
+        self.in_use_count() as f64 / self.max_count() as f64
+    }
+
+    pub fn is_related(&self, other: &MiniHeap<'_>) -> bool {
+        self.meshed_contains(|mh| mh == other)
+    }
+    pub fn take_bitmap(&mut self) -> [Comparatomic<AtomicU64>; 4] {
+        self.bitmap.set_and_exchange_all()
+    }
+
+    pub fn mesh_count(&self) -> usize {
+        let mut count = 0;
+
+        let mh = self;
+        loop {
+            count += 1;
+            if let Some(next) = mh.next_mashed {
+                mh = unsafe { self.get_mini_heap(next).as_ref().unwrap() };
+            } else {
+                break;
+            }
+        }
+
+        count
+    }
+
+    pub fn for_each_meshed<F>(&self, func: F)
+    where
+        F: Fn(&MiniHeap<'_>) -> bool,
+    {
+        loop {
+            if !func(self) && let Some(next_mashed) = self.next_mashed {
+               let mh = self.get_mini_heap(next_mashed);
+                unsafe {
+               (*mh).for_each_meshed(func);
+                }
+            }
+        }
+    }
+
+    pub fn meshed_contains<F>(&self, predicate: F) -> bool
+    where
+        F: Fn(&MiniHeap<'_>) -> bool,
+    {
+        loop {
+            if let Some(next_mashed) = self.next_mashed {
+                if !predicate(self) {
+                    let mh = self.get_mini_heap(next_mashed);
+
+                    unsafe { (*mh).for_each_meshed(predicate) };
+                } else {
+                    return true;
+                }
+            }
+        }
+    }
+}
+
+impl Heap for MiniHeap<'_> {
+    type PointerType = *mut ();
+    type MallocType = *mut ();
+
+    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
+        todo!()
+    }
+
+    unsafe fn malloc(&mut self, size: usize) -> *mut () {
+        todo!()
+    }
+
+    unsafe fn get_size(&mut self, ptr: *mut ()) -> usize {
+        todo!()
+    }
+
+    unsafe fn free(&mut self, ptr: *mut ()) {
+        todo!()
+    }
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FreeListId {
+    Full = 0,
+    Partial = 1,
+    Empty = 2,
+    Attached = 3,
+    Max = 4,
+}
+
+fn class_index(size: usize) -> usize {
+    if size <= MAX_SMALL_SIZE {
+        (size + 7) >> 3
+    } else {
+        (size + 127 + (120 << 7)) >> 7
+    }
+}
+pub fn size_class(size: usize) -> u32 {
+    CLASS_ARRAY[class_index(size)]
 }
 
 #[derive(PartialEq, Default)]
@@ -112,7 +301,6 @@ impl Flags {
     const SHUFFLE_VECTOR_OFFSET_SHIFT: u32 = 8;
     const MAX_COUNT_SHIFT: u32 = 16;
     const MESHED_OFFSET: u32 = 30;
-
     pub fn new(max_count: u32, size_class: u32, sv_offset: u32, freelist_id: u32) -> Self {
         let flags = (max_count << Self::MAX_COUNT_SHIFT)
             + (size_class << Self::SIZE_CLASS_SHIFT)
@@ -154,8 +342,17 @@ impl Flags {
         (self.flags.inner().load(Ordering::SeqCst) >> Self::SHUFFLE_VECTOR_OFFSET_SHIFT) & 0xff
     }
 
-    pub fn freelist_id(&self) -> u32 {
-        (self.flags.inner().load(Ordering::SeqCst) >> Self::FREELIST_ID_SHIFT) & 0x3
+    pub fn free_list_id(&self) -> FreeListId {
+        let id = (self.flags.inner().load(Ordering::SeqCst) >> Self::FREELIST_ID_SHIFT) & 0x3;
+
+        match id {
+            0 => FreeListId::Full,
+            1 => FreeListId::Partial,
+            2 => FreeListId::Empty,
+            3 => FreeListId::Attached,
+            4 => FreeListId::Max,
+            _ => unreachable!(),
+        }
     }
 
     pub fn set_meshed(&self) {
@@ -192,13 +389,12 @@ impl MiniHeapId {}
 
 // FIXME:: replace this with MiniHeapId and make it atomic if all usages of MiniHeapId are atomic
 // FIXME:: consider whether we need to multiply the array size by size of usize
-#[derive(Debug)]
-
-pub struct AtomicMiniHeapId<T: Heap>(AtomicPtr<T>);
+#[derive(PartialEq)]
+pub struct AtomicMiniHeapId<T: Heap>(Comparatomic<AtomicPtr<T>>);
 
 impl<T: Heap> AtomicMiniHeapId<T> {
     pub fn new(ptr: *mut T) -> AtomicMiniHeapId<T> {
-        AtomicMiniHeapId(AtomicPtr::new(ptr))
+        AtomicMiniHeapId(Comparatomic::new(ptr))
     }
 
     pub fn inner(&mut self) -> *mut T {
@@ -206,7 +402,7 @@ impl<T: Heap> AtomicMiniHeapId<T> {
     }
 
     pub unsafe fn get(&mut self, index: usize) -> *mut T {
-        let ptr = self.0.get_mut();
+        let ptr = self.0.inner().get_mut();
         ptr.add(index)
     }
 
