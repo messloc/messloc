@@ -5,7 +5,12 @@ use std::{
 };
 
 use crate::{
-    global_heap::GlobalHeap, mini_heap::MiniHeap, splits::MergeSetWithSplits, utils::madvise,
+    global_heap::GlobalHeap,
+    list_entry::ListEntry,
+    mini_heap::{AtomicMiniHeapId, MiniHeap},
+    rng::Rng,
+    splits::MergeSetWithSplits,
+    utils::madvise,
     MAX_MERGE_SETS, MAX_SPLIT_LIST_SIZE, NUM_BINS,
 };
 
@@ -13,7 +18,8 @@ struct FastWalkTime<'a> {
     pid: u32,
     pub global_heap: GlobalHeap<'a>,
     pub merge_set: MergeSetWithSplits<'a>,
-    pub free_lists: [[(MiniHeapListEntry, u64); NUM_BINS]; 3],
+    pub free_lists: [[(ListEntry<'a>, u64); NUM_BINS]; 3],
+    pub rng: Rng,
 }
 
 impl<'a> FastWalkTime<'a> {}
@@ -21,6 +27,10 @@ impl<'a> FastWalkTime<'a> {}
 pub struct Runtime<'a>(Arc<Mutex<FastWalkTime<'a>>>);
 
 impl<'a> Runtime<'a> {
+    pub fn share(&self) -> Self {
+        Runtime(Arc::clone(&self.0))
+    }
+
     pub fn update_pid(&mut self) {
         todo!();
         // self.pid = id();

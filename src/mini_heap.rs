@@ -1,5 +1,5 @@
 use std::{
-    ptr::{addr_of_mut, copy_nonoverlapping, null_mut},
+    ptr::{addr_of_mut, copy_nonoverlapping, null, null_mut},
     sync::{
         atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
@@ -12,8 +12,8 @@ use crate::{
     bitmap::{AtomicBitmapBase, Bitmap, BitmapBase, RelaxedBitmapBase},
     class_array::CLASS_ARRAY,
     comparatomic::Comparatomic,
+    list_entry::{ListEntry, Listable},
     one_way_mmap_heap::Heap,
-    rabbit_hole::RabbitHole,
     runtime::Runtime,
     span::Span,
     MAX_SMALL_SIZE, PAGE_SIZE,
@@ -24,6 +24,7 @@ pub struct MiniHeap<'a> {
     id: u64,
     runtime: Runtime<'a>,
     object_size: usize,
+    free_list: ListEntry<'a>,
     bitmap: Bitmap<AtomicBitmapBase<4>>,
     span: Span,
     //   internal::Bitmap _bitmap;           // 32 bytes 32
@@ -74,7 +75,7 @@ impl<'a> MiniHeap<'a> {
     }
 
     pub const fn max_count(&self) -> u32 {
-        todo!()
+        self.flags.max_count()
     }
     pub fn span_size(&self) -> usize {
         self.span.byte_length()
@@ -169,7 +170,7 @@ impl<'a> MiniHeap<'a> {
         self.flags.is_meshed()
     }
 
-    pub fn get_free_list(&self) -> MiniHeapListEntry {
+    pub fn get_free_list(&self) -> &ListEntry<'_> {
         &self.free_list
     }
 
@@ -246,6 +247,18 @@ impl<'a> MiniHeap<'a> {
             }
         }
     }
+
+    pub fn set_free_list(&mut self, free_list: ListEntry<'_>) {
+        self.free_list = free_list;
+    }
+
+    pub fn get_free_list_id(&self) -> FreeListId {
+        self.flags.free_list_id()
+    }
+
+    pub fn set_free_list_id(&mut self, free_list: FreeListId) {
+        self.flags.set_freelist_id(free_list)
+    }
 }
 
 impl Heap for MiniHeap<'_> {
@@ -279,6 +292,18 @@ pub enum FreeListId {
     Max = 4,
 }
 
+impl FreeListId {
+    pub fn from_integer(id: u32) -> Self {
+        match id {
+            0 => FreeListId::Full,
+            1 => FreeListId::Partial,
+            2 => FreeListId::Empty,
+            3 => FreeListId::Attached,
+            4 => FreeListId::Max,
+            _ => unreachable!(),
+        }
+    }
+}
 fn class_index(size: usize) -> usize {
     if size <= MAX_SMALL_SIZE {
         (size + 7) >> 3
@@ -367,10 +392,10 @@ impl Flags {
         (self.flags.inner().load(Ordering::SeqCst) >> Self::MESHED_OFFSET) & 1 == 1
     }
 
-    pub fn set_freelist_id(&self, id: u32) {
+    pub fn set_freelist_id(&self, freelist_id: FreeListId) {
         self.set_at(Self::MESHED_OFFSET);
         let mask = 0x3 << Self::FREELIST_ID_SHIFT;
-        let new_val = id << Self::FREELIST_ID_SHIFT;
+        let new_val = (freelist_id as u32) << Self::FREELIST_ID_SHIFT;
         self.set_masked(!mask, new_val);
     }
 
@@ -413,6 +438,10 @@ impl<T: Heap> AtomicMiniHeapId<T> {
     pub fn store(&self, value: *mut T, ordering: Ordering) {
         self.0.store(value, ordering)
     }
+
+    pub fn is_head(&self) -> bool {
+        self.load(Ordering::Acquire) == null::<T>() as *mut T
+    }
 }
 
 impl<T: Heap> Default for AtomicMiniHeapId<T> {
@@ -420,6 +449,7 @@ impl<T: Heap> Default for AtomicMiniHeapId<T> {
         todo!()
     }
 }
+
 // class Flags {
 //     private:
 //       DISALLOW_COPY_AND_ASSIGN(Flags);

@@ -7,14 +7,13 @@
 #![allow(unused)]
 #![feature(type_alias_impl_trait)]
 #![feature(once_cell)]
-
 use std::{
     alloc::{GlobalAlloc, Layout},
     cell::OnceCell,
     ptr::NonNull,
 };
 
-#[cfg(feature = "allocator-api")]
+#[cfg(feature = "allocator_api")]
 use std::alloc::{AllocError, Allocator};
 
 mod arena_fs;
@@ -24,10 +23,12 @@ mod class_array;
 mod comparatomic;
 mod global_heap;
 mod internal;
+mod list_entry;
 mod meshable_arena;
 mod mini_heap;
 mod mmap_heap;
 mod one_way_mmap_heap;
+mod rng;
 mod runtime;
 mod span;
 mod splits;
@@ -52,7 +53,7 @@ const NUM_BINS: usize = 25;
 const DEFAULT_MAX_MESH_COUNT: usize = 30000;
 const MAX_MESHES_PER_ITERATION: usize = 2500;
 const OCCUPANCY_CUTOFF: f64 = 0.8;
-const BINNED_TRACKER_MAX_EMPTY: usize = 128;
+const BINNED_TRACKER_MAX_EMPTY: u64 = 128;
 
 pub struct Messloc {}
 

@@ -1,1 +1,0 @@
-pub struct ComparatomicU64

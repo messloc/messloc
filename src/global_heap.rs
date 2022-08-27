@@ -11,10 +11,11 @@ use std::{
 
 use crate::{
     comparatomic::Comparatomic,
+    list_entry::ListEntry,
     meshable_arena::{MeshableArena, PageType},
     mini_heap::{self, AtomicMiniHeapId, FreeListId, MiniHeap, MiniHeapId},
     one_way_mmap_heap::Heap,
-    runtime::Runtime,
+    runtime::{self, Runtime},
     BINNED_TRACKER_MAX_EMPTY, MAX_MERGE_SETS, MAX_MESHES, MAX_MESHES_PER_ITERATION,
     MAX_SPLIT_LIST_SIZE, NUM_BINS, OCCUPANCY_CUTOFF, PAGE_SIZE,
 };
@@ -210,11 +211,18 @@ impl GlobalHeap<'_> {
 
     pub fn untrack_mini_heap_locked(&mut self, mh: &MiniHeap<'_>) {
         self.guarded.lock().unwrap().stats.alloc_count -= 1;
-        mh.get_free_list().remove(self.free_list_for(mh));
+        mh.get_free_list().remove(self.free_list_for(mh).unwrap());
     }
 
-    pub fn free_list_for(&self, mh: &MiniHeap<'_>) -> List {
-        todo!()
+    pub fn free_list_for(&self, mh: &MiniHeap<'_>) -> Option<ListEntry<'_>> {
+        let freelist = self.runtime.lock().unwrap().free_lists;
+        let size_class = mh.size_class() as usize;
+        match mh.free_list_id() {
+            FreeListId::Empty => Some(freelist[0][size_class].0),
+            FreeListId::Full => Some(freelist[1][size_class].0),
+            FreeListId::Partial => Some(freelist[2][size_class].0),
+            _ => None,
+        }
     }
 
     pub fn free(&mut self, ptr: *mut ()) {
@@ -269,7 +277,28 @@ impl GlobalHeap<'_> {
     }
 
     pub fn flush_bin_locked(&self, size_class: usize) {
-        todo!()
+        let mut empty = (*self.runtime.lock().unwrap()).free_lists[0];
+        let mut next = empty[size_class].0.next.unwrap();
+
+        if !next.is_head() {
+            while (!next.is_head()) {
+                let mut mh = unsafe {
+                    self.runtime
+                        .lock()
+                        .unwrap()
+                        .global_heap
+                        .mini_heap_for_id(next)
+                        .as_mut()
+                        .unwrap()
+                };
+                next = mh.get_free_list().next.unwrap();
+                self.free_mini_heap_locked(mh, true);
+                empty[size_class].1 -= 1;
+            }
+
+            assert!(empty[size_class].0.next.unwrap().is_head());
+            assert!(empty[size_class].0.prev.unwrap().is_head());
+        }
     }
 
     pub fn mesh_size_class_locked(&self, size_class: usize) -> usize {
@@ -314,7 +343,7 @@ impl GlobalHeap<'_> {
 
     pub fn shifted_splitting(&self, size_class: usize) -> usize {
         let free_lists = self.runtime.lock().unwrap().free_lists;
-        let mh = free_lists.empty.inner().get(size_class).unwrap().0;
+        let mh = free_lists[0].get(size_class).unwrap().0;
         let (left, right) = self.half_split(size_class);
         if left > 0 && right > 0 {
             assert!(free_lists.left.first().unwrap().bitmap().byte_count() == 32);
@@ -370,7 +399,7 @@ impl GlobalHeap<'_> {
 
         let left_size = 0usize;
         let right_size = 0usize;
-        while mh_id != ListState::Head
+        while mh_id != List::Head
             && left_size < MAX_SPLIT_LIST_SIZE
             && right_size < MAX_SPLIT_LIST_SIZE
         {
@@ -381,7 +410,7 @@ impl GlobalHeap<'_> {
                     .as_ref()
                     .unwrap()
             };
-            mh_id = mh.get_free_list().next();
+            mh_id = mh.get_free_list().next.unwrap();
 
             if mh.is_meshing_candidate() || mh.fullness() >= OCCUPANCY_CUTOFF {
                 let mut merge_set = self.runtime.lock().unwrap().merge_set;
@@ -394,8 +423,9 @@ impl GlobalHeap<'_> {
                 }
 
                 let merge_set = self.runtime.lock().unwrap().merge_set;
-                self.rng.shuffle(&merge_set.left, 0, left_size);
-                self.rng.shuffle(&merge_set.right, 0, right_size);
+                let rng = self.runtime.lock().unwrap().rng;
+                rng.shuffle(&mut merge_set.left, 0, left_size);
+                rng.shuffle(&mut merge_set.right, 0, right_size);
             }
         }
 
@@ -425,26 +455,27 @@ impl GlobalHeap<'_> {
         let current_free_list = self.free_list_for(&mini_heap);
         let free_list_id = mini_heap.free_list_id();
         let max_count = usize::try_from(mini_heap.max_count()).unwrap();
-        let size_class = mini_heap.size_class();
+        let size_class = mini_heap.size_class() as usize;
 
-        let (new_list_id, list) = match (in_use, current_free_list) {
-            (0, List::Empty) => return None,
-            (iu, List::Full) if iu == max_count => return None,
-            (0, _) => (FreeListId::Empty, free_lists.empty.get(size_class).unwrap()),
+        let (new_list_id, list) = match (in_use, free_list_id) {
+            (0, FreeListId::Empty) => return None,
+            (iu, FreeListId::Full) if iu == max_count => return None,
+            (0, _) => (FreeListId::Empty, free_lists[0].get(size_class).unwrap()),
             (iu, _) if iu == max_count => {
-                (FreeListId::Full, free_lists.full.get(size_class).unwrap)
+                (FreeListId::Full, free_lists[1].get(size_class).unwrap())
             }
-            (_, List::Partial) => return None,
-            _ => (
-                FreeListId::Partial,
-                free_lists.partial.get(size_class).unwrap(),
-            ),
+            (_, FreeListId::Partial) => return None,
+            _ => (FreeListId::Partial, free_lists[2].get(size_class).unwrap()),
         };
-        list.0
-            .add(current_free_list, new_list_id, List::Head, mini_heap);
+        list.0.add(
+            current_free_list.unwrap(),
+            new_list_id as u32,
+            AtomicMiniHeapId::new(null_mut()),
+            &mut mini_heap,
+        );
         list.1 += 1;
 
-        (free_lists.empty.get(size_class).unwrap().1 > BINNED_TRACKER_MAX_EMPTY).then_some(())
+        (free_lists[0].get(size_class).unwrap().1 > BINNED_TRACKER_MAX_EMPTY).then_some(())
     }
 
     pub fn mesh_locked(&self, dst: &MiniHeap<'_>, src: &MiniHeap<'_>) {
@@ -539,7 +570,7 @@ impl<const N: usize> Meshable for [Comparatomic<AtomicU64>; N] {
 }
 
 #[derive(Clone, Debug)]
-enum List {
+pub enum List {
     Full,
     Partial,
     Empty,

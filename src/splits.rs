@@ -1,3 +1,4 @@
+use crate::list_entry::ListEntry;
 use crate::mini_heap::MiniHeap;
 use crate::utils;
 use crate::{MAX_MERGE_SETS, MAX_SPLIT_LIST_SIZE, NUM_BINS};
@@ -12,20 +13,6 @@ pub struct MergeSetWithSplits<'a> {
 impl MergeSetWithSplits<'_> {
     pub unsafe fn madvise(&mut self) {
         let first = self.left.first();
-    }
-}
-
-pub struct FreeListSet([MiniHeapListEntry; NUM_BINS]);
-
-pub struct FreeListSetTriple {
-    pub empty: FreeListSet,
-    pub partial: FreeListSet,
-    pub full: FreeListSet,
-}
-
-impl FreeListSet {
-    pub fn inner(&self) -> &[MiniHeapListEntry; NUM_BINS] {
-        &self.0
     }
 }
 
