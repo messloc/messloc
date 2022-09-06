@@ -1,6 +1,7 @@
 use crate::arena_fs::open_shm_span_file;
 use crate::bitmap::{Bitmap, BitmapBase, RelaxedBitmapBase};
 use crate::runtime::Runtime;
+use crate::comparatomic::Comparatomic;
 use crate::span::{Length, Offset, Span, SpanList};
 use crate::{
     cheap_heap::CheapHeap,
@@ -13,7 +14,7 @@ use std::mem::size_of;
 use std::{
     path::PathBuf,
     ptr::null_mut,
-    sync::atomic::Ordering,
+    sync::atomic::{AtomicPtr, Ordering},
     sync::{Arc, Mutex},
 };
 
@@ -22,7 +23,7 @@ use libc::c_void;
 pub type Page = [u8; PAGE_SIZE];
 
 pub struct MeshableArena<'a> {
-    pub runtime: Arc<Mutex<Runtime<'a>>>,
+    pub runtime: Runtime<'a>,
     pub(crate) arena_begin: *mut Page,
     fd: i32,
     /// offset in pages
@@ -39,6 +40,11 @@ pub struct MeshableArena<'a> {
     max_mesh_count: usize,
 }
 
+unsafe impl Sync for MeshableArena<'_> {}
+unsafe impl Send for MeshableArena<'_> {}
+
+
+
 impl<'a> MeshableArena<'a> {
     pub fn init() -> MeshableArena<'a> {
         // TODO: check if meshing enabled
@@ -53,7 +59,7 @@ impl<'a> MeshableArena<'a> {
         let mh_index = unsafe { mh_allocator.malloc(index_size()) };
 
         MeshableArena {
-            runtime: Arc::new(Mutex::new(Runtime::init())),
+            runtime: Runtime::init(),
             //TODO:: find initial end value
             arena_begin,
             fd,
@@ -270,6 +276,10 @@ impl<'a> MeshableArena<'a> {
             .store(id, Ordering::Release);
     }
 
+    pub fn set_max_mesh_count(&mut self, max_mesh_count: usize) {
+        self.max_mesh_count = max_mesh_count;
+    }
+
     pub fn scavenge(&mut self, force: bool) {
         if force && self.dirty.len() < DIRTY_PAGE_THRESHOLD {
             let mut bitmap: Bitmap<RelaxedBitmapBase<{ ARENA_SIZE / PAGE_SIZE }>> =
@@ -392,7 +402,7 @@ impl<'a> MeshableArena<'a> {
         self.mini_heap_for_arena_offset(offset)
     }
 
-    pub fn mini_heap_for_id(&self, id: AtomicMiniHeapId<MiniHeap>) -> *mut MiniHeap {
+    pub fn mini_heap_for_id(&self, id: AtomicMiniHeapId<MiniHeap>) -> *mut MiniHeap<'_>{
         let mh = unsafe { self.mh_allocator.get_mut(id) };
         builtin_prefetch(mh as *mut ());
         mh

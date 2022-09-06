@@ -6,10 +6,13 @@ use std::{
         atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, MutexGuard, PoisonError,
     },
-    time::SystemTime,
+    time::{SystemTime, Duration},
 };
 
+use arrayvec::ArrayVec;
+
 use crate::{
+    span::Span,
     comparatomic::Comparatomic,
     list_entry::ListEntry,
     meshable_arena::{MeshableArena, PageType},
@@ -17,7 +20,7 @@ use crate::{
     one_way_mmap_heap::Heap,
     runtime::{self, Runtime},
     BINNED_TRACKER_MAX_EMPTY, MAX_MERGE_SETS, MAX_MESHES, MAX_MESHES_PER_ITERATION,
-    MAX_SPLIT_LIST_SIZE, NUM_BINS, OCCUPANCY_CUTOFF, PAGE_SIZE,
+    MAX_SPLIT_LIST_SIZE, NUM_BINS, OCCUPANCY_CUTOFF, PAGE_SIZE, cheap_heap::CheapHeap, MINI_HEAP_REFILL_GOAL_SIZE, MIN_STRING_LEN, 
 };
 
 pub struct GlobalHeapStats {
@@ -38,12 +41,13 @@ pub struct GlobalHeapGuarded<'a> {
 pub struct GlobalHeap<'a> {
     runtime: Runtime<'a>,
     shared: GlobalHeapShared,
-    pub guarded: Mutex<GlobalHeapGuarded<'a>>,
-    mini_heap: Mutex<MiniHeap<'a>>,
+    pub guarded:Mutex<GlobalHeapGuarded<'a>>,
+    mini_heap: MiniHeap<'a>,
     last_mesh_effective: AtomicBool,
     mesh_epoch: Epoch,
     miniheap_count: Comparatomic<AtomicU32>,
     access_lock: Mutex<()>,
+    mesh_period_ms: Duration,
 }
 pub struct GlobalHeapLocked<'lock, 'a: 'lock> {
     shared: &'lock GlobalHeapShared,
@@ -180,15 +184,15 @@ impl GlobalHeap<'_> {
         let begin = self.guarded.lock().unwrap().arena.arena_begin;
 
         to_free.iter().for_each(|heap| {
-            let mh = heap;
+            let mh = *heap;
             let mh_type = if mh.is_meshed() {
                 PageType::Meshed
             } else {
                 PageType::Dirty
             };
-            unsafe { self.free(mh.get_span_start(begin as *mut ()) as *mut ()) };
+            unsafe { self.free(mh.get_span_start() as *mut ())};
             self.guarded.lock().unwrap().stats.free_count += 1;
-            self.free_mini_heap_after_mesh_locked(mh, untrack);
+            self.free_mini_heap_after_mesh_locked(&mut mh, untrack);
         });
     }
 
@@ -276,6 +280,43 @@ impl GlobalHeap<'_> {
         }
     }
 
+        pub fn small_alloc_mini_heaps<'a, const N: usize>(&'a self, size_class: usize, object_size: usize, mini_heaps: &mut ArrayVec<&'a MiniHeap<'a>, N>, current: u64) {
+            mini_heaps.iter_mut().for_each(|mh| self.release_mini_heap_locked(mh));
+
+            mini_heaps.clear();
+
+            assert!(size_class < NUM_BINS);
+
+            let bytes_free = self.select_for_reuse(size_class, mini_heaps, current);
+
+            if bytes_free < MINI_HEAP_REFILL_GOAL_SIZE && !mini_heaps.is_full() {
+                let object_count = MIN_STRING_LEN.max(PAGE_SIZE / object_size);
+                let page_count = page_count(object_size * object_count);
+
+                while bytes_free < MINI_HEAP_REFILL_GOAL_SIZE && !mini_heaps.is_full() {
+                let mh = unsafe { self.alloc_mini_heap_locked(page_count, object_count, object_size, 1).as_ref().unwrap() };
+                assert!(mh.is_attached());
+                mh.set_attached(current, mh.get_free_list());
+                assert!(mh.is_attached() && mh.current() == current);
+                mini_heaps.push(mh);
+                bytes_free += mh.bytes_free();
+                }
+            }
+
+
+        }
+
+
+        pub fn release_mini_heap_locked(&mut self, mini_heap: &mut MiniHeap<'_>) {
+            mini_heap.unset_attached();
+            self.post_free_locked(mini_heap, mini_heap.in_use_count());
+        }
+
+        pub fn set_mesh_period_ms(&self, period: Duration) {
+            self.mesh_period_ms = period;
+        }
+
+
     pub fn flush_bin_locked(&self, size_class: usize) {
         let mut empty = (*self.runtime.lock().unwrap()).free_lists[0];
         let mut next = empty[size_class].0.next.unwrap();
@@ -340,6 +381,39 @@ impl GlobalHeap<'_> {
         self.flush_bin_locked(size_class);
         mesh_count
     }
+
+    pub fn select_for_reuse<'a, const N: usize>(&mut self, size_class: usize, mini_heaps: &mut ArrayVec<&'a MiniHeap<'a>, N>, current: u64) -> usize {
+
+        let lists = self.runtime.lock().unwrap().free_lists;
+            let bytes_free = self.fill_from_list(mini_heaps, current, lists[2][size_class]);
+        if bytes_free >= MINI_HEAP_REFILL_GOAL_SIZE || mini_heaps.is_full() {
+            bytes_free
+        } else {
+            bytes_free += self.fill_from_list(mini_heaps, current, lists[0][size_class]);
+            bytes_free
+        }
+    }
+
+    pub fn fill_from_list<'a, const N: usize>(&mut self, mini_heaps: &ArrayVec<&'a MiniHeap<'a>, N>, current: u64, free_list: (ListEntry<'a>, u64)) -> usize {
+
+        let mut next_id = free_list.0.next.unwrap();
+        let bytes_free = 0;
+        while !next_id.is_head() && bytes_free < MINI_HEAP_REFILL_GOAL_SIZE && !mini_heaps.is_full() {
+            let mh = unsafe { self.mini_heap_for_id(next_id).as_ref().unwrap() };
+            next_id = mh.get_free_list().next.unwrap();
+            //TODO: remove if removing it causes better experience as discovered in the original
+            //source 
+            bytes_free += mh.bytes_free();
+            assert!(mh.is_attached());
+            mh.set_attached(current, &self.free_list_for(mh).unwrap());
+            mini_heaps.push(mh);
+            free_list.1.saturating_sub(1);
+            } 
+
+        bytes_free
+        
+    }
+
 
     pub fn shifted_splitting(&self, size_class: usize) -> usize {
         let free_lists = self.runtime.lock().unwrap().free_lists;
@@ -480,9 +554,7 @@ impl GlobalHeap<'_> {
 
     pub fn mesh_locked(&self, dst: &MiniHeap<'_>, src: &MiniHeap<'_>) {
         src.for_each_meshed(|mh| {
-            let src_span = unsafe {
-                mh.get_span_start(self.guarded.lock().unwrap().arena.arena_begin as *mut ())
-            };
+            let src_span = unsafe { mh.get_span_start()};
             self.guarded
                 .lock()
                 .unwrap()
@@ -492,6 +564,41 @@ impl GlobalHeap<'_> {
         });
 
         dst.consume(src);
+    }
+
+    pub fn page_aligned_alloc(&self, alignment: usize, size: usize) -> *mut () {
+        let page_count = page_count(size);
+        let mh = unsafe { self.alloc_mini_heap_locked(page_count, 1, page_count * PAGE_SIZE, alignment).as_ref().unwrap() };
+
+        assert!(mh.is_large_alloc());
+        assert!(mh.span_size() == page_count * PAGE_SIZE);
+
+        unsafe { mh.malloc_at(self.guarded.lock().unwrap().arena.arena_begin, 0) }
+    }
+
+
+    pub fn alloc_mini_heap_locked(&self, page_count: usize, object_count: usize, object_size: usize, alignment: usize) -> *mut MiniHeap<'_> {
+
+        let buffer = unsafe { (*self.guarded.lock().unwrap()).arena.mh_allocator.alloc() };
+        let span = Span::default();
+        let span_begin = self.guarded.lock().unwrap().arena.page_alloc(page_count, alignment);
+        let mh = MiniHeap::with_object(span, object_count, object_size);
+        let mini_heap_id = unsafe { (*self.guarded.lock().unwrap()).arena.mh_allocator.offset_for(buffer) };
+        unsafe { (*self.guarded.lock().unwrap()).arena.track_miniheap(span, buffer.cast()) };
+
+        let stats = (*self.guarded.lock().unwrap()).stats;
+        self.miniheap_count.inner().fetch_add(1, Ordering::Acquire);
+        stats.alloc_count += 1;
+        stats.high_water_mark = stats.high_water_mark.max(self.miniheap_count.load(Ordering::AcqRel) as usize);
+        &mut mh as *mut MiniHeap<'_>
+
+    }
+
+    pub fn dump_strings(self) {
+        //TODO: this isnt implemented in the source and its not a major fuctionality blocker so
+        //implement it by implementing print occupancy.
+
+        todo!()
     }
 }
 

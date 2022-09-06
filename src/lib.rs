@@ -6,10 +6,9 @@
 )]
 #![allow(unused)]
 #![feature(type_alias_impl_trait)]
-#![feature(once_cell)]
+#![feature(half_open_range_patterns)]
 use std::{
     alloc::{GlobalAlloc, Layout},
-    cell::OnceCell,
     ptr::NonNull,
 };
 
@@ -30,8 +29,10 @@ mod mmap_heap;
 mod one_way_mmap_heap;
 mod rng;
 mod runtime;
+mod shuffle_vector;
 mod span;
 mod splits;
+mod thread_local_heap;
 mod utils;
 
 const PAGE_SIZE: usize = 4096;
@@ -44,6 +45,7 @@ const ARENA_SIZE: usize = 32 * 1024 * 1024 * 1024; // 32 GB
 const SPAN_CLASS_COUNT: u32 = 256;
 const MIN_ARENA_EXPANSION: usize = 4096; // 16 MB in pages
 const MAX_SMALL_SIZE: usize = 1024;
+const MAX_SIZE: usize = 16384;
 const MAP_SHARED: i32 = 1;
 const DIRTY_PAGE_THRESHOLD: usize = 32;
 const MAX_MESHES: usize = 256;
@@ -54,6 +56,13 @@ const DEFAULT_MAX_MESH_COUNT: usize = 30000;
 const MAX_MESHES_PER_ITERATION: usize = 2500;
 const OCCUPANCY_CUTOFF: f64 = 0.8;
 const BINNED_TRACKER_MAX_EMPTY: u64 = 128;
+const MESHES_PER_MAP: f64 = 0.33;
+const MAX_SHUFFLE_VECTOR_LENGTH: usize = 256;
+const MIN_OBJECT_SIZE: usize = 8;
+const MINI_HEAP_REFILL_GOAL_SIZE: usize = 4 * 1024;
+const MIN_STRING_LEN: usize = 8;
+const ENABLED_SHUFFLE_ON_INIT: bool = true;
+const MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR: usize = 24;
 
 pub struct Messloc {}
 

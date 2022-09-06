@@ -6,8 +6,7 @@ use crate::PAGE_SIZE;
 pub trait Heap {
     type PointerType;
     type MallocType;
-    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int)
-        -> Self::PointerType;
+    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> Self::PointerType;
     unsafe fn malloc(&mut self, size: usize) -> Self::MallocType;
     unsafe fn get_size(&mut self, ptr: *mut ()) -> usize;
     unsafe fn free(&mut self, ptr: *mut ());

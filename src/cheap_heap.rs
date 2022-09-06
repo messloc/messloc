@@ -33,7 +33,7 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_
         this
     }
 
-    pub unsafe fn get_mut(&self, id: AtomicMiniHeapId<MiniHeap>) -> *mut MiniHeap {
+    pub unsafe fn get_mut(&self, id: AtomicMiniHeapId<MiniHeap<'_>>) -> *mut MiniHeap<'_> {
         let value = id.load(Ordering::SeqCst);
 
         *value.cast()
@@ -55,6 +55,11 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_
 
     pub unsafe fn offset_for(&self, ptr: *mut [u8; ALLOC_SIZE]) -> u32 {
         ptr.offset_from(self.arena) as u32
+    }
+
+    pub unsafe fn assign(&mut self, data: *mut (), size: usize) {
+        let ptr = self as *mut Self as *mut ();
+        ptr.copy_from_nonoverlapping(data, size);
     }
 }
 
@@ -106,6 +111,8 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_S
         self.freelist_offset += 1;
     }
 }
+
+unsafe impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Sync for CheapHeap<ALLOC_SIZE, MAX_COUNT> {}
 
 pub struct DynCheapHeap {
     arena: *mut u8,

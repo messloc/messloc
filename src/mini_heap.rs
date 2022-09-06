@@ -62,6 +62,10 @@ impl<'a> MiniHeap<'a> {
         ));
     }
 
+    pub fn with_object(span: Span, object_count: usize, object_size: usize) -> MiniHeap<'a> {
+        todo!()
+    }
+
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -77,12 +81,17 @@ impl<'a> MiniHeap<'a> {
     pub const fn max_count(&self) -> u32 {
         self.flags.max_count()
     }
+
     pub fn span_size(&self) -> usize {
         self.span.byte_length()
     }
 
     pub fn is_large_alloc(&self) -> bool {
         self.max_count() == 1
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.in_use_count() <= self.max_count() as usize
     }
 
     pub fn bitmap(&self) -> &Bitmap<AtomicBitmapBase<4>> {
@@ -119,7 +128,7 @@ impl<'a> MiniHeap<'a> {
             .unwrap())
         .arena
         .arena_begin;
-        let src_span = unsafe { src.get_span_start(begin as *mut ()) };
+        let src_span = unsafe { src.get_span_start()};
         src.take_bitmap().iter().for_each(|off| {
             assert!(!self.bitmap.is_set(off));
 
@@ -146,7 +155,8 @@ impl<'a> MiniHeap<'a> {
         }
     }
 
-    pub unsafe fn get_span_start(&self, addr: *mut ()) -> *mut c_void {
+    pub unsafe fn get_span_start(&self) -> *mut c_void {
+        let addr = (*self.runtime.lock().unwrap()).global_heap.guarded.lock().unwrap().arena.arena_begin;
         addr.add(self.span.length as usize * PAGE_SIZE) as *mut c_void
     }
 
@@ -166,6 +176,12 @@ impl<'a> MiniHeap<'a> {
         self.current() != 0
     }
 
+    pub fn set_attached(&self, current: u64, free_list: &ListEntry<'a>) {
+        self.current.store(current, Ordering::Release);
+        self.free_list.remove(*free_list);
+        self.set_free_list_id(FreeListId::Attached);
+    }
+
     pub fn is_meshed(&self) -> bool {
         self.flags.is_meshed()
     }
@@ -178,12 +194,20 @@ impl<'a> MiniHeap<'a> {
         self.current.load(Ordering::Acquire)
     }
 
+    pub fn unset_attached(&self) {
+       self.current.store(0, Ordering::Release);
+    }
+
     pub fn free_list_id(&self) -> FreeListId {
         self.flags.free_list_id()
     }
 
     pub fn size_class(&self) -> u32 {
         self.flags.size_class()
+    }
+
+    pub fn bytes_free(&self) -> usize {
+        self.in_use_count() * self.object_size
     }
 
     pub fn is_meshing_candidate(&self) -> bool {
@@ -199,6 +223,19 @@ impl<'a> MiniHeap<'a> {
     }
     pub fn take_bitmap(&mut self) -> [Comparatomic<AtomicU64>; 4] {
         self.bitmap.set_and_exchange_all()
+    }
+
+    pub fn bitmap_mut(&mut self) -> &mut Bitmap<AtomicBitmapBase<4>> {
+        &mut self.bitmap
+    }
+
+    pub fn set_sv_offset(&mut self, i: usize) {
+        //TODO: check if u8 is enough for this
+        self.flags.set_sv_offset(u8::try_from(i).unwrap());
+    }
+
+    pub fn free_offset(&mut self, offset: usize) {
+        self.bitmap.unset(offset);
     }
 
     pub fn mesh_count(&self) -> usize {
@@ -259,6 +296,7 @@ impl<'a> MiniHeap<'a> {
     pub fn set_free_list_id(&mut self, free_list: FreeListId) {
         self.flags.set_freelist_id(free_list)
     }
+
 }
 
 impl Heap for MiniHeap<'_> {

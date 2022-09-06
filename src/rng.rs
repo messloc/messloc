@@ -14,7 +14,7 @@ impl Rng {
         }
     }
 
-    pub fn shuffle<T, U>(&self, data: &mut [T], mut start: usize, mut end: usize) {
+    pub fn shuffle<T>(&self, data: &mut [T], mut start: usize, mut end: usize) {
         while start != end {
             let diff = end - start;
             if diff >= 1 {

@@ -22,6 +22,10 @@ pub struct RelaxedBitmapBase<const N: usize> {
 }
 
 impl<const N: usize> RelaxedBitmapBase<N> {
+    pub fn new() -> Self {
+        Self { bits: [0; N] }
+    }
+
     pub fn invert(&mut self) {
         self.bits.iter_mut().for_each(|bit| {
             *bit = !*bit as u64;
@@ -85,6 +89,12 @@ impl<T> Bitmap<T>
 where
     T: BitmapBase + PartialEq,
 {
+    pub const fn relaxed_with_bit_length<const N: usize>() -> Bitmap<RelaxedBitmapBase<N>> {
+        Bitmap {
+            internal_type: RelaxedBitmapBase::<N>::new(),
+        }
+    }
+
     pub fn inner(&self) -> &T {
         &self.internal_type
     }
@@ -147,6 +157,12 @@ where
         self.internal_type.in_use_count()
     }
 
+    pub fn iter<'a, U>(&self) -> U
+    where U : Iterator<Item=&'a u64> + 'a
+    {
+        self.internal_type.iter()
+    }
+
     pub fn compute_item_position(&self, index: usize) -> (usize, usize) {
         assert!(index < self.internal_type.bit_count());
         let item = index >> WORD_BIT_SHIFT;
@@ -156,6 +172,12 @@ where
 
         (item, position)
     }
+}
+
+impl<const N: usize> Bitmap<RelaxedBitmapBase<N>> {
+    pub fn set_and_exchange_all(&self, mut bits: [u64; N], other: [u64; N] ) -> [u64; N] {
+       todo!()      
+    }   
 }
 
 impl Bitmap<AtomicBitmapBase<4>> {
@@ -187,6 +209,7 @@ pub trait BitmapBase: PartialEq {
     fn unset_at(&mut self, item: usize, position: usize) -> bool;
     fn invert(&mut self);
     fn in_use_count(&self) -> u64;
+    fn iter<'a, T: Iterator<Item=&'a u64>>(&'a self) -> T;
 }
 
 impl<const N: usize> BitmapBase for RelaxedBitmapBase<N> {
@@ -217,6 +240,10 @@ impl<const N: usize> BitmapBase for RelaxedBitmapBase<N> {
 
     fn in_use_count(&self) -> u64 {
         self.in_use_count()
+    }
+
+    fn iter<'a, T: Iterator<Item=&'a u64>>(&'a self) -> T {
+        self.iter()
     }
 }
 
@@ -255,6 +282,11 @@ impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
     fn in_use_count(&self) -> u64 {
         self.in_use_count()
     }
+
+    fn iter<'a, T: Iterator<Item=&'a u64>>(&'a self) -> T {
+        self.iter()
+    }
+
 }
 
 impl Default for Bitmap<AtomicBitmapBase<4>> {
