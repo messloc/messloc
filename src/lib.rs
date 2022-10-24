@@ -6,7 +6,10 @@
 )]
 #![allow(unused)]
 #![feature(type_alias_impl_trait)]
-#![feature(half_open_range_patterns)]
+#![feature(let_chains)]
+#![feature(maybe_uninit_uninit_array)]
+#![feature(maybe_uninit_array_assume_init)]
+#![recursion_limit = "256"]
 use std::{
     alloc::{GlobalAlloc, Layout},
     ptr::NonNull,
@@ -16,6 +19,7 @@ use std::{
 use std::alloc::{AllocError, Allocator};
 
 mod arena_fs;
+mod atomic_enum;
 mod bitmap;
 mod cheap_heap;
 mod class_array;

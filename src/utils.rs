@@ -1,7 +1,7 @@
 use crate::MAP_SHARED;
 use libc::{
-    c_char, c_void, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, F_SETFD, MADV_DONTNEED, MAP_FIXED,
-    PROT_READ, PROT_WRITE, sigset_t, SIGRTMIN, pthread_t, pthread_attr_t, signalfd_siginfo,
+    c_char, c_void, pthread_attr_t, pthread_t, signalfd_siginfo, sigset_t, FALLOC_FL_KEEP_SIZE,
+    FALLOC_FL_PUNCH_HOLE, F_SETFD, MADV_DONTNEED, MAP_FIXED, PROT_READ, PROT_WRITE, SIGRTMIN,
 };
 use std::ffi::c_int;
 use std::io::{Error, Result};
@@ -9,7 +9,9 @@ use std::mem::MaybeUninit;
 use std::os::unix::prelude::OsStrExt;
 use std::path::{Path, PathBuf};
 
-pub const SIGDUMP: i32 = libc::SIGRTMIN() + 8;
+pub fn sigdump() -> i32 {
+    libc::SIGRTMIN() + 8
+}
 
 pub unsafe fn madvise(ptr: *mut c_void, size: usize) -> Result<()> {
     OutputWrapper(libc::madvise(ptr, size, MADV_DONTNEED)).into()
@@ -103,39 +105,47 @@ pub unsafe fn create_signal_mask() -> Option<*mut sigset_t> {
     let mask = [0u64; 16].as_mut_ptr() as *mut sigset_t;
     libc::sigemptyset(mask);
     let result = libc::sigaddset(mask, SIGRTMIN() + 8);
-    (result == 0).then_some(mask)  
-    
+    (result == 0).then_some(mask)
 }
 
-pub unsafe fn sig_proc_mask(how: c_int, set: *mut sigset_t, old_set: *mut sigset_t) -> Result<()>{
+pub unsafe fn sig_proc_mask(how: c_int, set: *mut sigset_t, old_set: *mut sigset_t) -> Result<()> {
     OutputWrapper(libc::sigprocmask(how, set, old_set)).into()
 }
 
 pub unsafe fn signalfd_siginfo() -> signalfd_siginfo {
-        let buffer = [0; 32];
-        std::mem::transmute::<_, signalfd_siginfo>(buffer)
-    }
+    let buffer = [0; 32];
+    std::mem::transmute::<_, signalfd_siginfo>(buffer)
+}
 
 pub unsafe fn new_signal_fd(mask: *mut sigset_t) -> Result<c_int> {
-    
     let result = libc::signalfd(-1i32, mask, 0);
     if result > 0 {
-       Ok(result) 
+        Ok(result)
     } else {
         Err(Error::last_os_error())
     }
 }
-    
-pub unsafe fn pthread_create(thread: pthread_t, attr: &[pthread_attr_t], start_routine: fn(*mut c_void) -> *mut c_void, args: *mut ()) -> Result<()> 
-{
-    let start_routine = std::mem::transmute::<_, extern "C" fn(*mut c_void) -> *mut c_void>(start_routine);
-    OutputWrapper(libc::pthread_create(thread as *mut pthread_t, attr.as_ptr() , start_routine, args as *mut c_void)).into()
+
+pub unsafe fn pthread_create(
+    thread: pthread_t,
+    attr: &[pthread_attr_t],
+    start_routine: fn(*mut c_void) -> *mut c_void,
+    args: *mut (),
+) -> Result<()> {
+    let start_routine =
+        std::mem::transmute::<_, extern "C" fn(*mut c_void) -> *mut c_void>(start_routine);
+    OutputWrapper(libc::pthread_create(
+        thread as *mut pthread_t,
+        attr.as_ptr(),
+        start_routine,
+        args as *mut c_void,
+    ))
+    .into()
 }
 
 pub unsafe fn pthread_exit(value: *mut c_void) -> ! {
     libc::pthread_exit(value)
 }
-
 
 type UnsafeFunction = Option<unsafe extern "C" fn()>;
 

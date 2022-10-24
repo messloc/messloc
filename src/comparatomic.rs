@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::{
+    ops::BitAnd,
+    sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering},
+};
 
 #[derive(Default)]
 pub struct Comparatomic<T: Atomic>(T);
@@ -26,6 +29,10 @@ where
     pub fn store(&self, value: T::Innermost, ordering: Ordering) {
         self.0.store_value(value, ordering)
     }
+
+    pub fn fetch_add(&self, value: T::Innermost, ordering: Ordering) {
+        self.0.fetch_add(value, ordering)
+    }
 }
 
 pub trait Atomic: Sized {
@@ -41,6 +48,7 @@ pub trait Atomic: Sized {
 
     fn load_value(&self, ordering: Ordering) -> Self::Innermost;
     fn store_value(&self, value: Self::Innermost, ordering: Ordering);
+    fn fetch_add(&self, value: Self::Innermost, ordering: Ordering);
 }
 impl<T> PartialEq<Comparatomic<T>> for Comparatomic<T>
 where
@@ -82,7 +90,11 @@ impl Atomic for AtomicU64 {
     }
 
     fn store_value(&self, value: Self::Innermost, ordering: Ordering) {
-        self.store_value(value, ordering);
+        self.store(value, ordering);
+    }
+
+    fn fetch_add(&self, value: Self::Innermost, ordering: Ordering) {
+        self.fetch_add(value, ordering);
     }
 }
 
@@ -107,7 +119,11 @@ impl Atomic for AtomicU32 {
     }
 
     fn store_value(&self, value: Self::Innermost, ordering: Ordering) {
-        self.store_value(value, ordering);
+        self.store(value, ordering);
+    }
+
+    fn fetch_add(&self, value: Self::Innermost, ordering: Ordering) {
+        self.fetch_add(value, ordering);
     }
 }
 impl<T> Atomic for AtomicPtr<T> {
@@ -131,6 +147,87 @@ impl<T> Atomic for AtomicPtr<T> {
     }
 
     fn store_value(&self, value: Self::Innermost, ordering: Ordering) {
-        self.store_value(value, ordering);
+        self.store(value, ordering);
+    }
+
+    fn fetch_add(&self, value: Self::Innermost, ordering: Ordering) {
+        unreachable!()
+    }
+}
+
+impl Atomic for AtomicU8 {
+    type Innermost = u8;
+    fn make(input: Self::Innermost) -> AtomicU8 {
+        AtomicU8::new(input)
+    }
+
+    fn cas(
+        &self,
+        current: Self::Innermost,
+        new: Self::Innermost,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<u8, u8> {
+        self.compare_exchange(current, new, success, failure)
+    }
+
+    fn load_value(&self, ordering: Ordering) -> u8 {
+        self.load(ordering)
+    }
+
+    fn store_value(&self, value: Self::Innermost, ordering: Ordering) {
+        self.store(value, ordering);
+    }
+
+    fn fetch_add(&self, value: Self::Innermost, ordering: Ordering) {
+        self.fetch_add(value, ordering);
+    }
+}
+
+impl Atomic for AtomicBool {
+    type Innermost = bool;
+    fn make(input: Self::Innermost) -> AtomicBool {
+        AtomicBool::new(input)
+    }
+
+    fn cas(
+        &self,
+        current: Self::Innermost,
+        new: Self::Innermost,
+        success: Ordering,
+        failure: Ordering,
+    ) -> Result<bool, bool> {
+        self.compare_exchange(current, new, success, failure)
+    }
+
+    fn load_value(&self, ordering: Ordering) -> bool {
+        self.load(ordering)
+    }
+
+    fn store_value(&self, value: Self::Innermost, ordering: Ordering) {
+        self.store(value, ordering);
+    }
+
+    fn fetch_add(&self, value: Self::Innermost, ordering: Ordering) {
+        // fetch_add is not applicable on atomic bool
+        unreachable!()
+    }
+}
+
+impl From<Comparatomic<AtomicU64>> for u64 {
+    fn from(x: Comparatomic<AtomicU64>) -> u64 {
+        x.load(Ordering::AcqRel)
+    }
+}
+
+impl<T> BitAnd<&Comparatomic<T>> for &Comparatomic<T>
+where
+    T: Atomic,
+    T::Innermost: BitAnd<T::Innermost, Output = T::Innermost>,
+{
+    type Output = T::Innermost;
+
+    fn bitand(self, rhs: &Comparatomic<T>) -> Self::Output {
+        self.load(Ordering::AcqRel) & rhs.load(Ordering::AcqRel)
     }
 }

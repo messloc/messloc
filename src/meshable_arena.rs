@@ -1,7 +1,8 @@
 use crate::arena_fs::open_shm_span_file;
+use crate::atomic_enum::AtomicOption;
 use crate::bitmap::{Bitmap, BitmapBase, RelaxedBitmapBase};
-use crate::runtime::Runtime;
 use crate::comparatomic::Comparatomic;
+use crate::runtime::{FastWalkTime, Runtime};
 use crate::span::{Length, Offset, Span, SpanList};
 use crate::{
     cheap_heap::CheapHeap,
@@ -10,7 +11,7 @@ use crate::{
     ARENA_SIZE, DEFAULT_MAX_MESH_COUNT, DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE,
     SPAN_CLASS_COUNT,
 };
-use std::mem::size_of;
+use std::mem::{size_of, MaybeUninit};
 use std::{
     path::PathBuf,
     ptr::null_mut,
@@ -22,8 +23,7 @@ use crate::{utils::*, MAP_SHARED};
 use libc::c_void;
 pub type Page = [u8; PAGE_SIZE];
 
-pub struct MeshableArena<'a> {
-    pub runtime: Runtime<'a>,
+pub struct MeshableArena {
     pub(crate) arena_begin: *mut Page,
     fd: i32,
     /// offset in pages
@@ -31,7 +31,6 @@ pub struct MeshableArena<'a> {
     dirty: SpanList,
     clean: SpanList,
     freed_spans: SpanList,
-    mh_index: [AtomicMiniHeapId<CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>>; ARENA_SIZE / PAGE_SIZE],
     pub(crate) mh_allocator: CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>,
     meshed_bitmap: Bitmap<RelaxedBitmapBase<{ ARENA_SIZE / PAGE_SIZE }>>,
     fork_pipe: [i32; 2],
@@ -40,13 +39,11 @@ pub struct MeshableArena<'a> {
     max_mesh_count: usize,
 }
 
-unsafe impl Sync for MeshableArena<'_> {}
-unsafe impl Send for MeshableArena<'_> {}
+unsafe impl Sync for MeshableArena {}
+unsafe impl Send for MeshableArena {}
 
-
-
-impl<'a> MeshableArena<'a> {
-    pub fn init() -> MeshableArena<'a> {
+impl MeshableArena {
+    pub fn init() -> MeshableArena {
         // TODO: check if meshing enabled
         //TODO: initialise stuff from the constructor
 
@@ -54,12 +51,11 @@ impl<'a> MeshableArena<'a> {
 
         let mut mh_allocator = CheapHeap::new();
         let arena_begin =
-            unsafe { mh_allocator.map(ARENA_SIZE, MAP_SHARED, fd).inner() as *mut Page };
+            unsafe { &mh_allocator.map(ARENA_SIZE, MAP_SHARED, fd) as *const _ as *mut Page };
 
         let mh_index = unsafe { mh_allocator.malloc(index_size()) };
 
         MeshableArena {
-            runtime: Runtime::init(),
             //TODO:: find initial end value
             arena_begin,
             fd,
@@ -67,7 +63,6 @@ impl<'a> MeshableArena<'a> {
             dirty: SpanList::default(),
             clean: SpanList::default(),
             mh_allocator,
-            mh_index,
             meshed_bitmap: Bitmap::default(),
             freed_spans: SpanList::default(),
             fork_pipe: [-1, -1],
@@ -76,7 +71,6 @@ impl<'a> MeshableArena<'a> {
             max_mesh_count: DEFAULT_MAX_MESH_COUNT,
         }
     }
-
     pub fn page_alloc(&mut self, page_count: usize, page_align: usize) -> (Span, *mut Page) {
         if page_count == 0 {
             return (Span::default(), null_mut());
@@ -270,10 +264,10 @@ impl<'a> MeshableArena<'a> {
         offset: usize,
         id: *mut CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>,
     ) {
-        self.mh_index
-            .get(offset)
+        self.mh_allocator
+            .index(offset)
             .unwrap()
-            .store(id, Ordering::Release);
+            .store(id as *mut (), Ordering::Release);
     }
 
     pub fn set_max_mesh_count(&mut self, max_mesh_count: usize) {
@@ -380,32 +374,28 @@ impl<'a> MeshableArena<'a> {
         };
     }
     fn store_indices(&mut self, keep_offset: usize, page_count: usize) {
-        let keep_id = unsafe { self.mh_index.get_mut(keep_offset).unwrap().get(keep_offset) };
+        let keep_id = unsafe {
+            self.mh_allocator
+                .index_mut(keep_offset)
+                .unwrap()
+                .get(keep_offset)
+        };
         (0..page_count).for_each(|index| {
-            self.mh_index
-                .get(index)
+            self.mh_allocator
+                .index(index)
                 .unwrap()
                 .store(keep_id, Ordering::Release);
         });
     }
 
-    fn mini_heap_for_arena_offset(&self, arena_offset: usize) -> *mut MiniHeap {
-        self.mh_index
-            .get(arena_offset)
+    pub fn lookup_mini_heap(&self, ptr: *mut ()) -> *mut MiniHeap<'_> {
+        let offset = unsafe { ptr.offset_from(self.arena_begin as *mut ()) } as usize;
+
+        self.mh_allocator
+            .index(offset)
             .unwrap()
             .load(Ordering::Acquire)
             .cast()
-    }
-
-    pub fn lookup_mini_heap(&self, ptr: *mut ()) -> *mut MiniHeap {
-        let offset = unsafe { ptr.offset_from(self.arena_begin as *mut ()) } as usize;
-        self.mini_heap_for_arena_offset(offset)
-    }
-
-    pub fn mini_heap_for_id(&self, id: AtomicMiniHeapId<MiniHeap>) -> *mut MiniHeap<'_>{
-        let mh = unsafe { self.mh_allocator.get_mut(id) };
-        builtin_prefetch(mh as *mut ());
-        mh
     }
 
     pub fn above_mesh_threshold(&self) -> bool {
@@ -432,11 +422,11 @@ fn reset_span_mapping(ptr: *mut c_void, fd: i32, span: &Span) {
     }
 }
 
-const fn index_size() -> usize {
+pub const fn index_size() -> usize {
     size_of::<Offset>() * ARENA_SIZE / PAGE_SIZE
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum PageType {
     Clean = 0,
     Dirty = 1,

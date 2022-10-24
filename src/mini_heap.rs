@@ -1,31 +1,40 @@
 use std::{
+    cell::Ref,
+    cell::RefCell,
+    marker::PhantomData,
+    mem::MaybeUninit,
+    ops::DerefMut,
     ptr::{addr_of_mut, copy_nonoverlapping, null, null_mut},
+    rc::Rc,
     sync::{
         atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
         Arc, Mutex,
     },
 };
 
+use lazy_static::__Deref;
 use libc::c_void;
 
 use crate::{
+    atomic_enum::AtomicOption,
     bitmap::{AtomicBitmapBase, Bitmap, BitmapBase, RelaxedBitmapBase},
     class_array::CLASS_ARRAY,
     comparatomic::Comparatomic,
     list_entry::{ListEntry, Listable},
+    meshable_arena::PageType,
     one_way_mmap_heap::Heap,
     runtime::Runtime,
-    span::Span,
-    MAX_SMALL_SIZE, PAGE_SIZE,
+    span::{self, Span},
+    utils::builtin_prefetch,
+    MAX_MESHES, MAX_SMALL_SIZE, PAGE_SIZE,
 };
 
-#[derive(PartialEq)]
 pub struct MiniHeap<'a> {
-    id: u64,
     runtime: Runtime<'a>,
     object_size: usize,
-    free_list: ListEntry<'a>,
-    bitmap: Bitmap<AtomicBitmapBase<4>>,
+    pub span_start: *mut Self,
+    pub free_list: Rc<RefCell<ListEntry>>,
+    bitmap: Rc<RefCell<Bitmap<AtomicBitmapBase<4>>>>,
     span: Span,
     //   internal::Bitmap _bitmap;           // 32 bytes 32
     //   const Span _span;                   // 8        40
@@ -33,10 +42,9 @@ pub struct MiniHeap<'a> {
     //   atomic<pid_t> _current{0};          // 4        52
     //   Flags _flags;                       // 4        56
     flags: Flags,
-    object_size_reciprocal: f32, // 4        60
     //   MiniHeapID _nextMeshed{};           // 4        64
     current: Comparatomic<AtomicU64>,
-    next_mashed: Option<AtomicMiniHeapId<MiniHeap<'a>>>,
+    pub next_mashed: AtomicOption<AtomicMiniHeapId>,
 }
 
 impl<'a> MiniHeap<'a> {
@@ -48,8 +56,9 @@ impl<'a> MiniHeap<'a> {
         object_size: usize,
     ) {
         addr_of_mut!((*this).span).write(span);
-        addr_of_mut!((*this).object_size_reciprocal).write((object_size as f32).recip());
-        addr_of_mut!((*this).bitmap).write(Bitmap::<AtomicBitmapBase<4>>::default());
+        addr_of_mut!((*this).bitmap).write(Rc::new(RefCell::new(
+            Bitmap::<AtomicBitmapBase<4>>::default(),
+        )));
         addr_of_mut!((*this).flags).write(Flags::new(
             object_count as u32,
             if object_count > 1 {
@@ -66,19 +75,23 @@ impl<'a> MiniHeap<'a> {
         todo!()
     }
 
-    pub fn id(&self) -> u64 {
-        self.id
+    pub fn get_mini_heap(&'a self, id: &'a AtomicOption<AtomicMiniHeapId>) -> *mut MiniHeap<'a> {
+        let mh = unsafe {
+            self.runtime
+                .0
+                .global_heap
+                .arena
+                .lock()
+                .unwrap()
+                .mh_allocator
+                .get_mut(id)
+        };
+        builtin_prefetch(mh as *const _ as *mut ());
+
+        mh
     }
 
-    pub fn get_mini_heap(&self, id: AtomicMiniHeapId<MiniHeap<'_>>) -> *mut MiniHeap<'_> {
-        self.runtime.global_heap().mini_heap_for_id(id)
-    }
-
-    pub fn get_mini_heap_id(&self, miniheap: *mut ()) -> *mut MiniHeap<'a> {
-        self.runtime.global_heap().mini_heap_for(miniheap)
-    }
-
-    pub const fn max_count(&self) -> u32 {
+    pub fn max_count(&self) -> u32 {
         self.flags.max_count()
     }
 
@@ -94,18 +107,20 @@ impl<'a> MiniHeap<'a> {
         self.in_use_count() <= self.max_count() as usize
     }
 
-    pub fn bitmap(&self) -> &Bitmap<AtomicBitmapBase<4>> {
-        &self.bitmap
+    pub fn bitmap(&self) -> Rc<RefCell<Bitmap<AtomicBitmapBase<4>>>> {
+        self.bitmap.clone()
     }
 
-    pub unsafe fn malloc_at(&self, arena: *mut [u8; PAGE_SIZE], offset: usize) -> *mut () {
-        if !self.bitmap.try_to_set(offset) {
+    pub unsafe fn malloc_at(&'a self, offset: usize) -> *mut () {
+        let arena = self.runtime.0.global_heap.arena.lock().unwrap().arena_begin;
+
+        if !self.bitmap().borrow_mut().try_to_set(offset) {
             null_mut()
         } else {
             let object_size = if self.is_large_alloc() {
                 self.span.length as usize * PAGE_SIZE
             } else {
-                (self.object_size_reciprocal.recip() + 0.5) as usize
+                (self.object_size as f32 + 0.5).trunc() as usize
             };
             arena
                 .add(self.span.offset as usize)
@@ -115,57 +130,124 @@ impl<'a> MiniHeap<'a> {
         }
     }
 
-    pub fn consume(&self, mut src: &MiniHeap<'a>) {
+    pub fn consume(&'a mut self, src: &'a MiniHeap<'a>) {
         // TODO: consider taking an owned miniheap
         assert!(src != self);
         assert_eq!(self.object_size, src.object_size);
 
         src.set_meshed();
-        let begin = ((*self.runtime.lock().unwrap())
-            .global_heap
-            .guarded
-            .lock()
-            .unwrap())
-        .arena
-        .arena_begin;
-        let src_span = unsafe { src.get_span_start()};
-        src.take_bitmap().iter().for_each(|off| {
-            assert!(!self.bitmap.is_set(off));
+        let src_span = self.span_start;
+        src.take_bitmap().iter_mut().for_each(|off| {
+            assert!(!self
+                .bitmap
+                .borrow_mut()
+                .is_set(off.load(Ordering::AcqRel) as usize));
 
             let offset = off.load(Ordering::AcqRel) as usize;
             unsafe {
                 let src_object = unsafe { src_span.add(offset) };
-                let dst_object = self.malloc_at(begin.cast(), offset);
-                copy_nonoverlapping(src_object, dst_object as *mut c_void, self.object_size);
+                let dst_object = self.malloc_at(offset) as *mut MiniHeap<'a>;
+                copy_nonoverlapping(src_object, dst_object, self.object_size);
             }
         });
-        self.track_meshed_span(self.get_mini_heap_id(src as *const MiniHeap<'_> as *mut ()));
+        self.track_meshed_span(src);
     }
 
-    pub fn track_meshed_span(&self, src: *mut MiniHeap<'_>) {
-        if let Some(mesh) = self.next_mashed {
-            unsafe {
-                self.get_mini_heap(mesh)
-                    .as_ref()
-                    .unwrap()
-                    .track_meshed_span(src);
+    pub fn free_mini_heap_locked(&mut self, mini_heap: *mut (), untrack: bool) {
+        let mut to_free: [MaybeUninit<*mut ()>; MAX_MESHES] = MaybeUninit::uninit_array();
+
+        let mh = unsafe { mini_heap.cast::<MiniHeap<'a>>().as_mut().unwrap() };
+        let mut last = 0;
+
+        crate::for_each_meshed!(mh {
+            to_free[last].write(mh as *const _ as *mut ());
+            last += 1;
+            false
+        });
+
+        let to_free = unsafe { MaybeUninit::array_assume_init(to_free) };
+
+        let begin = self.runtime.0.global_heap.arena.lock().unwrap().arena_begin;
+
+        to_free.iter().for_each(|heap| {
+            let mh = unsafe { heap.cast::<MiniHeap<'a>>().as_mut().unwrap() };
+            let mh_type = if mh.is_meshed() {
+                PageType::Meshed
+            } else {
+                PageType::Dirty
+            };
+            let span_start = mh.span_start;
+            unsafe { self.free(span_start as *mut ()) };
+
+            if untrack && !mh.is_meshed() {
+                self.untrack_mini_heap_locked(mini_heap);
             }
-        } else {
-            self.next_mashed = Some(AtomicMiniHeapId::new(src));
+
+            unsafe {
+                self.runtime
+                    .0
+                    .global_heap
+                    .arena
+                    .lock()
+                    .unwrap()
+                    .mh_allocator
+                    .free(mini_heap)
+            };
+
+            self.runtime
+                .0
+                .global_heap
+                .mini_heap_count
+                .fetch_sub(1, Ordering::AcqRel);
+        });
+    }
+
+    pub fn untrack_mini_heap_locked(&self, mut mh: *mut ()) {
+        let freelist = &self.runtime.0.global_heap.free_lists.0;
+        let empty = &freelist[0].borrow();
+        let full = &freelist[1].borrow();
+        let partial = &freelist[2].borrow();
+
+        let miniheap = unsafe { mh.cast::<MiniHeap<'a>>().as_mut().unwrap() };
+        let size_class = miniheap.size_class() as usize;
+
+        let mut list = match &miniheap.free_list_id() {
+            FreeListId::Empty => Some(&empty[size_class].0),
+            FreeListId::Full => Some(&full[size_class].0),
+            FreeListId::Partial => Some(&partial[size_class].0),
+            _ => None,
+        }
+        .unwrap() as *const _ as *mut ListEntry;
+
+        let free_list = miniheap.free_list.borrow();
+        free_list.remove(list as *mut ());
+    }
+
+    pub fn track_meshed_span(&'a self, src: &MiniHeap<'a>) {
+        unsafe {
+            match &self.next_mashed.load(Ordering::AcqRel) {
+                Some(mesh) => unsafe {
+                    let mut mesh = mesh
+                        .load(Ordering::AcqRel)
+                        .cast::<MiniHeap<'a>>()
+                        .as_mut()
+                        .unwrap();
+                    mesh.track_meshed_span(src);
+                },
+                _ => self.next_mashed.store_unwrapped(
+                    AtomicMiniHeapId::new(&src as *const _ as *mut ()),
+                    Ordering::AcqRel,
+                ),
+            };
         }
     }
 
-    pub unsafe fn get_span_start(&self) -> *mut c_void {
-        let addr = (*self.runtime.lock().unwrap()).global_heap.guarded.lock().unwrap().arena.arena_begin;
-        addr.add(self.span.length as usize * PAGE_SIZE) as *mut c_void
-    }
-
     pub fn in_use_count(&self) -> usize {
-        self.bitmap.inner().in_use_count() as usize
+        self.bitmap.borrow().inner().in_use_count() as usize
     }
 
-    pub fn clear_if_not_free(&self, offset: usize) -> bool {
-        !self.bitmap.inner().unset(offset)
+    pub fn clear_if_not_free(&mut self, offset: usize) -> bool {
+        !self.bitmap.borrow_mut().unset(offset)
     }
 
     pub fn set_meshed(&self) {
@@ -176,9 +258,11 @@ impl<'a> MiniHeap<'a> {
         self.current() != 0
     }
 
-    pub fn set_attached(&self, current: u64, free_list: &ListEntry<'a>) {
+    pub fn set_attached(&'a self, current: u64, free_list: *mut ListEntry) {
         self.current.store(current, Ordering::Release);
-        self.free_list.remove(*free_list);
+        let list = self.free_list.borrow();
+
+        list.remove(free_list as *mut ());
         self.set_free_list_id(FreeListId::Attached);
     }
 
@@ -186,16 +270,12 @@ impl<'a> MiniHeap<'a> {
         self.flags.is_meshed()
     }
 
-    pub fn get_free_list(&self) -> &ListEntry<'_> {
-        &self.free_list
-    }
-
     pub fn current(&self) -> u64 {
         self.current.load(Ordering::Acquire)
     }
 
     pub fn unset_attached(&self) {
-       self.current.store(0, Ordering::Release);
+        self.current.store(0, Ordering::Release);
     }
 
     pub fn free_list_id(&self) -> FreeListId {
@@ -218,15 +298,8 @@ impl<'a> MiniHeap<'a> {
         self.in_use_count() as f64 / self.max_count() as f64
     }
 
-    pub fn is_related(&self, other: &MiniHeap<'_>) -> bool {
-        self.meshed_contains(|mh| mh == other)
-    }
-    pub fn take_bitmap(&mut self) -> [Comparatomic<AtomicU64>; 4] {
-        self.bitmap.set_and_exchange_all()
-    }
-
-    pub fn bitmap_mut(&mut self) -> &mut Bitmap<AtomicBitmapBase<4>> {
-        &mut self.bitmap
+    pub fn take_bitmap(&self) -> [Comparatomic<AtomicU64>; 4] {
+        self.bitmap.borrow().set_and_exchange_all()
     }
 
     pub fn set_sv_offset(&mut self, i: usize) {
@@ -235,71 +308,67 @@ impl<'a> MiniHeap<'a> {
     }
 
     pub fn free_offset(&mut self, offset: usize) {
-        self.bitmap.unset(offset);
+        self.bitmap.borrow_mut().unset(offset);
     }
 
-    pub fn mesh_count(&self) -> usize {
+    pub fn mesh_count(&'a self) -> usize {
         let mut count = 0;
 
-        let mh = self;
+        let mut mh = self;
         loop {
             count += 1;
-            if let Some(next) = mh.next_mashed {
-                mh = unsafe { self.get_mini_heap(next).as_ref().unwrap() };
-            } else {
-                break;
+            unsafe {
+                if let Some(next) = &mh.next_mashed.load(Ordering::AcqRel) {
+                    let mh = unsafe {
+                        self.runtime
+                            .0
+                            .global_heap
+                            .arena
+                            .lock()
+                            .unwrap()
+                            .mh_allocator
+                            .get_mut(&mh.next_mashed)
+                    };
+                    builtin_prefetch(mh as *const _ as *mut ());
+                } else {
+                    break;
+                }
             }
         }
 
         count
     }
 
-    pub fn for_each_meshed<F>(&self, func: F)
+    pub fn for_each_meshed<F>(&'a self, func: &'a F)
     where
-        F: Fn(&MiniHeap<'_>) -> bool,
+        F: Fn(&MiniHeap<'a>) -> bool,
     {
         loop {
-            if !func(self) && let Some(next_mashed) = self.next_mashed {
-               let mh = self.get_mini_heap(next_mashed);
+            let value = unsafe { self.next_mashed.load(Ordering::AcqRel) };
+
+            if !func(self) && let Some(next_mashed) = value {
+
+               let mh = self.get_mini_heap(&self.next_mashed);
                 unsafe {
-               (*mh).for_each_meshed(func);
+               mh.as_ref().unwrap().for_each_meshed(func);
                 }
             }
         }
     }
 
-    pub fn meshed_contains<F>(&self, predicate: F) -> bool
-    where
-        F: Fn(&MiniHeap<'_>) -> bool,
-    {
-        loop {
-            if let Some(next_mashed) = self.next_mashed {
-                if !predicate(self) {
-                    let mh = self.get_mini_heap(next_mashed);
-
-                    unsafe { (*mh).for_each_meshed(predicate) };
-                } else {
-                    return true;
-                }
-            }
-        }
-    }
-
-    pub fn set_free_list(&mut self, free_list: ListEntry<'_>) {
-        self.free_list = free_list;
+    pub fn set_free_list(&'a self, free_list: ListEntry) {
+        self.free_list.replace(free_list);
     }
 
     pub fn get_free_list_id(&self) -> FreeListId {
         self.flags.free_list_id()
     }
 
-    pub fn set_free_list_id(&mut self, free_list: FreeListId) {
+    pub fn set_free_list_id(&self, free_list: FreeListId) {
         self.flags.set_freelist_id(free_list)
     }
-
 }
-
-impl Heap for MiniHeap<'_> {
+impl<'a> Heap for MiniHeap<'a> {
     type PointerType = *mut ();
     type MallocType = *mut ();
 
@@ -317,6 +386,17 @@ impl Heap for MiniHeap<'_> {
 
     unsafe fn free(&mut self, ptr: *mut ()) {
         todo!()
+    }
+}
+
+impl PartialEq for MiniHeap<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.object_size == other.object_size
+            && self.span_start == other.span_start
+            && self.bitmap == other.bitmap
+            && self.span == other.span
+            && self.flags == other.flags
+            && self.current == other.current
     }
 }
 
@@ -371,6 +451,26 @@ impl Flags {
             + (freelist_id << Self::FREELIST_ID_SHIFT);
         Self {
             flags: Comparatomic::new(flags),
+        }
+    }
+
+    fn set(&self, offset: u32) {
+        let mask = 1u32.checked_shl(offset).unwrap();
+        let old_flags = self.flags.load(Ordering::Acquire);
+        loop {
+            if (self
+                .flags
+                .inner()
+                .compare_exchange_weak(
+                    old_flags,
+                    old_flags | mask,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_err())
+            {
+                break;
+            }
         }
     }
 
@@ -452,40 +552,64 @@ impl MiniHeapId {}
 
 // FIXME:: replace this with MiniHeapId and make it atomic if all usages of MiniHeapId are atomic
 // FIXME:: consider whether we need to multiply the array size by size of usize
-#[derive(PartialEq)]
-pub struct AtomicMiniHeapId<T: Heap>(Comparatomic<AtomicPtr<T>>);
+pub struct AtomicMiniHeapId {
+    heap: AtomicOption<*mut ()>,
+}
 
-impl<T: Heap> AtomicMiniHeapId<T> {
-    pub fn new(ptr: *mut T) -> AtomicMiniHeapId<T> {
-        AtomicMiniHeapId(Comparatomic::new(ptr))
+impl AtomicMiniHeapId {
+    pub fn new(ptr: *mut ()) -> Self {
+        AtomicMiniHeapId {
+            heap: AtomicOption::new(ptr),
+        }
     }
 
-    pub fn inner(&mut self) -> *mut T {
-        self.0.load(Ordering::Acquire)
+    pub unsafe fn get(&self, index: usize) -> *mut () {
+        let ptr = self.load(Ordering::AcqRel) as *mut MiniHeap<'_>;
+        ptr.add(index) as *mut ()
     }
 
-    pub unsafe fn get(&mut self, index: usize) -> *mut T {
-        let ptr = self.0.inner().get_mut();
-        ptr.add(index)
+    pub fn load(&self, ordering: Ordering) -> *mut () {
+        unsafe { self.heap.load_unwrapped(ordering) }
     }
 
-    pub fn load(&self, ordering: Ordering) -> *mut T {
-        self.0.load(ordering)
-    }
-
-    pub fn store(&self, value: *mut T, ordering: Ordering) {
-        self.0.store(value, ordering)
+    pub fn store(&self, value: *mut (), ordering: Ordering) {
+        self.heap.store_unwrapped(value, ordering)
     }
 
     pub fn is_head(&self) -> bool {
-        self.load(Ordering::Acquire) == null::<T>() as *mut T
+        self.load(Ordering::Acquire) == null::<()>() as *mut ()
     }
 }
 
-impl<T: Heap> Default for AtomicMiniHeapId<T> {
+impl Default for AtomicMiniHeapId {
     fn default() -> Self {
-        todo!()
+        AtomicMiniHeapId::new(null_mut())
     }
+}
+
+impl Clone for AtomicMiniHeapId {
+    fn clone(&self) -> Self {
+        let val = self.load(Ordering::AcqRel);
+        AtomicMiniHeapId::new(val as *const _ as *mut ())
+    }
+}
+
+#[macro_export]
+macro_rules! for_each_meshed {
+    ($mh: tt $func: block) => {{
+        let result = loop {
+            let value = unsafe { $mh.next_mashed.load(Ordering::AcqRel) };
+            let mut result = false;
+            result = $func;
+            if result && let Some(next_mashed) = value {
+                           let mh = $mh.get_mini_heap(&$mh.next_mashed);
+                            } else {
+                                break true;
+                            }
+        };
+
+        result
+    }};
 }
 
 // class Flags {

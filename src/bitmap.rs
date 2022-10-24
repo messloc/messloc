@@ -1,6 +1,8 @@
 use crate::comparatomic::{Atomic, Comparatomic};
 use crate::span::Span;
 use crate::utils::{ffsll, popcountl, stlog};
+use std::cell::Ref;
+use std::ops::BitOrAssign;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_BIT_COUNT: u64 = u64::MAX;
@@ -16,19 +18,20 @@ const fn get_mask(pos: usize) -> usize {
     1usize >> pos
 }
 
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, PartialEq)]
 pub struct RelaxedBitmapBase<const N: usize> {
     bits: [u64; N],
 }
 
 impl<const N: usize> RelaxedBitmapBase<N> {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { bits: [0; N] }
     }
 
     pub fn invert(&mut self) {
         self.bits.iter_mut().for_each(|bit| {
-            *bit = !*bit as u64;
+            *bit = !*bit;
         })
     }
 
@@ -77,12 +80,12 @@ impl<const N: usize> Default for RelaxedBitmapBase<N> {
     }
 }
 
-#[derive(Default, PartialEq)]
+#[derive(Default, PartialEq, Eq)]
 pub struct Bitmap<T>
 where
     T: BitmapBase + PartialEq,
 {
-    internal_type: T,
+    pub internal_type: T,
 }
 
 impl<T> Bitmap<T>
@@ -133,14 +136,23 @@ where
         iter.next().map(|num| BYTE_SIZE * 8 * num + off as usize)
     }
 
-    pub fn unset(&mut self, offset: usize) {
+    pub fn unset(&mut self, offset: usize) -> bool {
         let (item, position) = self.compute_item_position(offset);
-        self.internal_type.unset_at(item, position);
+        self.internal_type.unset_at(item, position)
+    }
+
+    pub fn bits(&self) -> &[T::Item] {
+        self.internal_type.bits()
     }
 
     pub fn try_to_set(&mut self, offset: usize) -> bool {
         let (item, position) = self.compute_item_position(offset);
         self.internal_type.set_at(item, position)
+    }
+
+    pub fn is_set(&self, offset: usize) -> bool {
+        let (item, position) = self.compute_item_position(offset);
+        self.internal_type.get_bit(item).unwrap() & u64::try_from(position).unwrap() == 1
     }
 
     pub fn track_meshed(&mut self, span: Span) {
@@ -157,10 +169,8 @@ where
         self.internal_type.in_use_count()
     }
 
-    pub fn iter<'a, U>(&self) -> U
-    where U : Iterator<Item=&'a u64> + 'a
-    {
-        self.internal_type.iter()
+    pub fn byte_count(&self) -> usize {
+        representation_size(self.internal_type.bit_count())
     }
 
     pub fn compute_item_position(&self, index: usize) -> (usize, usize) {
@@ -173,11 +183,10 @@ where
         (item, position)
     }
 }
-
 impl<const N: usize> Bitmap<RelaxedBitmapBase<N>> {
-    pub fn set_and_exchange_all(&self, mut bits: [u64; N], other: [u64; N] ) -> [u64; N] {
-       todo!()      
-    }   
+    pub fn set_and_exchange_all(&self, mut bits: [u64; N], other: [u64; N]) -> [u64; N] {
+        todo!()
+    }
 }
 
 impl Bitmap<AtomicBitmapBase<4>> {
@@ -201,7 +210,7 @@ impl Bitmap<AtomicBitmapBase<4>> {
 }
 
 pub trait BitmapBase: PartialEq {
-    type Item;
+    type Item: Into<u64>;
     fn bits(&self) -> &[Self::Item];
     fn get_bit(&self, num: usize) -> Option<u64>;
     fn set_at(&mut self, at: usize, position: usize) -> bool;
@@ -209,7 +218,6 @@ pub trait BitmapBase: PartialEq {
     fn unset_at(&mut self, item: usize, position: usize) -> bool;
     fn invert(&mut self);
     fn in_use_count(&self) -> u64;
-    fn iter<'a, T: Iterator<Item=&'a u64>>(&'a self) -> T;
 }
 
 impl<const N: usize> BitmapBase for RelaxedBitmapBase<N> {
@@ -241,16 +249,14 @@ impl<const N: usize> BitmapBase for RelaxedBitmapBase<N> {
     fn in_use_count(&self) -> u64 {
         self.in_use_count()
     }
-
-    fn iter<'a, T: Iterator<Item=&'a u64>>(&'a self) -> T {
-        self.iter()
-    }
 }
 
 #[derive(PartialEq)]
 pub struct AtomicBitmapBase<const N: usize> {
     bits: [Comparatomic<AtomicU64>; N],
 }
+
+impl<const N: usize> AtomicBitmapBase<N> {}
 
 impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
     type Item = Comparatomic<AtomicU64>;
@@ -264,11 +270,19 @@ impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
     }
 
     fn set_at(&mut self, at: usize, position: usize) -> bool {
-        self.set_at(at, position)
+        let mask = get_mask(position) as u64;
+
+        let old = self.bits[at].load(Ordering::Acquire);
+        self.bits[at].store(old | mask, Ordering::Release);
+        old & mask == 0
     }
 
     fn unset_at(&mut self, at: usize, position: usize) -> bool {
-        self.unset_at(at, position)
+        let mask = get_mask(position) as u64;
+
+        let old = self.bits[at].load(Ordering::Acquire);
+        self.bits[at].store(old & !mask, Ordering::Release);
+        old & mask == 0
     }
 
     fn bit_count(&self) -> usize {
@@ -276,17 +290,19 @@ impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
     }
 
     fn invert(&mut self) {
-        self.invert()
+        self.bits.iter_mut().for_each(|bit| {
+            let val = bit.load(Ordering::Acquire);
+            bit.store(!val, Ordering::Release);
+        })
     }
 
     fn in_use_count(&self) -> u64 {
-        self.in_use_count()
-    }
+        self.bits.iter().fold(0u64, |mut count, bit| {
+            count += popcountl(bit.load(Ordering::Acquire));
 
-    fn iter<'a, T: Iterator<Item=&'a u64>>(&'a self) -> T {
-        self.iter()
+            count
+        })
     }
-
 }
 
 impl Default for Bitmap<AtomicBitmapBase<4>> {
