@@ -388,7 +388,7 @@ impl MeshableArena {
         });
     }
 
-    pub fn lookup_mini_heap(&self, ptr: *mut ()) -> *mut MiniHeap<'_> {
+    pub fn lookup_mini_heap(&self, ptr: *mut ()) -> *mut MiniHeap {
         let offset = unsafe { ptr.offset_from(self.arena_begin as *mut ()) } as usize;
 
         self.mh_allocator

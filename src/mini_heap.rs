@@ -29,8 +29,8 @@ use crate::{
     MAX_MESHES, MAX_SMALL_SIZE, PAGE_SIZE,
 };
 
-pub struct MiniHeap<'a> {
-    runtime: Runtime<'a>,
+pub struct MiniHeap {
+    runtime: Runtime,
     object_size: usize,
     pub span_start: *mut Self,
     pub free_list: Rc<RefCell<ListEntry>>,
@@ -47,7 +47,7 @@ pub struct MiniHeap<'a> {
     pub next_mashed: AtomicOption<AtomicMiniHeapId>,
 }
 
-impl<'a> MiniHeap<'a> {
+impl MiniHeap {
     // creates the MiniHeap at the location of the pointer
     pub unsafe fn new_inplace(
         this: *mut Self,
@@ -71,11 +71,11 @@ impl<'a> MiniHeap<'a> {
         ));
     }
 
-    pub fn with_object(span: Span, object_count: usize, object_size: usize) -> MiniHeap<'a> {
+    pub fn with_object(span: Span, object_count: usize, object_size: usize) -> MiniHeap {
         todo!()
     }
 
-    pub fn get_mini_heap(&'a self, id: &'a AtomicOption<AtomicMiniHeapId>) -> *mut MiniHeap<'a> {
+    pub fn get_mini_heap(&self, id: &AtomicOption<AtomicMiniHeapId>) -> *mut MiniHeap {
         let mh = unsafe {
             self.runtime
                 .0
@@ -111,7 +111,7 @@ impl<'a> MiniHeap<'a> {
         self.bitmap.clone()
     }
 
-    pub unsafe fn malloc_at(&'a self, offset: usize) -> *mut () {
+    pub unsafe fn malloc_at(&self, offset: usize) -> *mut () {
         let arena = self.runtime.0.global_heap.arena.lock().unwrap().arena_begin;
 
         if !self.bitmap().borrow_mut().try_to_set(offset) {
@@ -130,7 +130,7 @@ impl<'a> MiniHeap<'a> {
         }
     }
 
-    pub fn consume(&'a mut self, src: &'a MiniHeap<'a>) {
+    pub fn consume(&mut self, src: &MiniHeap) {
         // TODO: consider taking an owned miniheap
         assert!(src != self);
         assert_eq!(self.object_size, src.object_size);
@@ -146,7 +146,7 @@ impl<'a> MiniHeap<'a> {
             let offset = off.load(Ordering::AcqRel) as usize;
             unsafe {
                 let src_object = unsafe { src_span.add(offset) };
-                let dst_object = self.malloc_at(offset) as *mut MiniHeap<'a>;
+                let dst_object = self.malloc_at(offset) as *mut MiniHeap;
                 copy_nonoverlapping(src_object, dst_object, self.object_size);
             }
         });
@@ -156,7 +156,7 @@ impl<'a> MiniHeap<'a> {
     pub fn free_mini_heap_locked(&mut self, mini_heap: *mut (), untrack: bool) {
         let mut to_free: [MaybeUninit<*mut ()>; MAX_MESHES] = MaybeUninit::uninit_array();
 
-        let mh = unsafe { mini_heap.cast::<MiniHeap<'a>>().as_mut().unwrap() };
+        let mh = unsafe { mini_heap.cast::<MiniHeap>().as_mut().unwrap() };
         let mut last = 0;
 
         crate::for_each_meshed!(mh {
@@ -170,7 +170,7 @@ impl<'a> MiniHeap<'a> {
         let begin = self.runtime.0.global_heap.arena.lock().unwrap().arena_begin;
 
         to_free.iter().for_each(|heap| {
-            let mh = unsafe { heap.cast::<MiniHeap<'a>>().as_mut().unwrap() };
+            let mh = unsafe { heap.cast::<MiniHeap>().as_mut().unwrap() };
             let mh_type = if mh.is_meshed() {
                 PageType::Meshed
             } else {
@@ -208,7 +208,7 @@ impl<'a> MiniHeap<'a> {
         let full = &freelist[1].borrow();
         let partial = &freelist[2].borrow();
 
-        let miniheap = unsafe { mh.cast::<MiniHeap<'a>>().as_mut().unwrap() };
+        let miniheap = unsafe { mh.cast::<MiniHeap>().as_mut().unwrap() };
         let size_class = miniheap.size_class() as usize;
 
         let mut list = match &miniheap.free_list_id() {
@@ -223,13 +223,13 @@ impl<'a> MiniHeap<'a> {
         free_list.remove(list as *mut ());
     }
 
-    pub fn track_meshed_span(&'a self, src: &MiniHeap<'a>) {
+    pub fn track_meshed_span(&self, src: &MiniHeap) {
         unsafe {
             match &self.next_mashed.load(Ordering::AcqRel) {
                 Some(mesh) => unsafe {
                     let mut mesh = mesh
                         .load(Ordering::AcqRel)
-                        .cast::<MiniHeap<'a>>()
+                        .cast::<MiniHeap>()
                         .as_mut()
                         .unwrap();
                     mesh.track_meshed_span(src);
@@ -258,7 +258,7 @@ impl<'a> MiniHeap<'a> {
         self.current() != 0
     }
 
-    pub fn set_attached(&'a self, current: u64, free_list: *mut ListEntry) {
+    pub fn set_attached(&self, current: u64, free_list: *mut ListEntry) {
         self.current.store(current, Ordering::Release);
         let list = self.free_list.borrow();
 
@@ -311,7 +311,7 @@ impl<'a> MiniHeap<'a> {
         self.bitmap.borrow_mut().unset(offset);
     }
 
-    pub fn mesh_count(&'a self) -> usize {
+    pub fn mesh_count(&self) -> usize {
         let mut count = 0;
 
         let mut mh = self;
@@ -339,9 +339,9 @@ impl<'a> MiniHeap<'a> {
         count
     }
 
-    pub fn for_each_meshed<F>(&'a self, func: &'a F)
+    pub fn for_each_meshed<F>(&self, func: &F)
     where
-        F: Fn(&MiniHeap<'a>) -> bool,
+        F: Fn(&MiniHeap) -> bool,
     {
         loop {
             let value = unsafe { self.next_mashed.load(Ordering::AcqRel) };
@@ -356,7 +356,7 @@ impl<'a> MiniHeap<'a> {
         }
     }
 
-    pub fn set_free_list(&'a self, free_list: ListEntry) {
+    pub fn set_free_list(&self, free_list: ListEntry) {
         self.free_list.replace(free_list);
     }
 
@@ -368,7 +368,7 @@ impl<'a> MiniHeap<'a> {
         self.flags.set_freelist_id(free_list)
     }
 }
-impl<'a> Heap for MiniHeap<'a> {
+impl Heap for MiniHeap {
     type PointerType = *mut ();
     type MallocType = *mut ();
 
@@ -389,7 +389,7 @@ impl<'a> Heap for MiniHeap<'a> {
     }
 }
 
-impl PartialEq for MiniHeap<'_> {
+impl PartialEq for MiniHeap {
     fn eq(&self, other: &Self) -> bool {
         self.object_size == other.object_size
             && self.span_start == other.span_start
@@ -564,7 +564,7 @@ impl AtomicMiniHeapId {
     }
 
     pub unsafe fn get(&self, index: usize) -> *mut () {
-        let ptr = self.load(Ordering::AcqRel) as *mut MiniHeap<'_>;
+        let ptr = self.load(Ordering::AcqRel) as *mut MiniHeap;
         ptr.add(index) as *mut ()
     }
 
@@ -602,10 +602,10 @@ macro_rules! for_each_meshed {
             let mut result = false;
             result = $func;
             if result && let Some(next_mashed) = value {
-                           let mh = $mh.get_mini_heap(&$mh.next_mashed);
-                            } else {
-                                break true;
-                            }
+                                   let mh = $mh.get_mini_heap(&$mh.next_mashed);
+                                    } else {
+                                        break true;
+                                    }
         };
 
         result

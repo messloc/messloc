@@ -15,6 +15,8 @@ use std::{
     ptr::NonNull,
 };
 
+use crate::runtime::Runtime;
+
 #[cfg(feature = "allocator_api")]
 use std::alloc::{AllocError, Allocator};
 
@@ -68,37 +70,20 @@ const MIN_STRING_LEN: usize = 8;
 const ENABLED_SHUFFLE_ON_INIT: bool = true;
 const MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR: usize = 24;
 
-pub struct Messloc {}
-
-impl Messloc {
-    fn allocate(&self, layout: Layout) -> Option<NonNull<[u8]>> {
-        todo!()
-    }
-
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        todo!()
-    }
-}
-
-unsafe impl GlobalAlloc for Messloc {
+unsafe impl GlobalAlloc for Runtime {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        match self.allocate(layout) {
-            Some(p) => p.as_ptr() as *mut _,
-            // Errors are indicated by null pointers
-            None => std::ptr::null_mut(),
-        }
+        self.allocate(layout)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: `ptr` is guaranteed to point to valid memory allocated
         // by this allocator.
-        let ptr = NonNull::new_unchecked(ptr);
         self.deallocate(ptr, layout);
     }
 }
 
 #[cfg(feature = "allocator-api")]
-unsafe impl Allocator for Messloc {
+unsafe impl<'a> Allocator for Runtime<'a> {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self.allocate(layout).ok_or(AllocError)
     }

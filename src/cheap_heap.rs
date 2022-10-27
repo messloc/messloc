@@ -21,7 +21,7 @@ pub struct CheapHeap<const ALLOC_SIZE: usize, const MAX_COUNT: usize> {
     freelist_offset: usize,
 }
 
-impl<'a, const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_COUNT> {
+impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_COUNT> {
     pub fn new() -> Self {
         let indices = std::array::from_fn(|_| AtomicMiniHeapId::new(null_mut()));
         let mut this = Self {
@@ -42,7 +42,7 @@ impl<'a, const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, 
         this
     }
 
-    pub unsafe fn get_mut(&self, id: &'a AtomicOption<AtomicMiniHeapId>) -> *mut MiniHeap<'a> {
+    pub unsafe fn get_mut(&self, id: &AtomicOption<AtomicMiniHeapId>) -> *mut MiniHeap {
         let value = id.load(Ordering::AcqRel).unwrap();
 
         value.load(Ordering::AcqRel).cast()

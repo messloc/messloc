@@ -13,17 +13,17 @@ use crate::{
 };
 use crate::{ENABLED_SHUFFLE_ON_INIT, MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR};
 
-pub struct ShuffleVector<'a, const N: usize> {
-    start: [Comparatomic<AtomicPtr<MiniHeap<'a>>>; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR],
+pub struct ShuffleVector<const N: usize> {
+    start: [Comparatomic<AtomicPtr<MiniHeap>>; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR],
     array: RefCell<[Entry; N]>,
-    pub mini_heaps: Vec<*mut MiniHeap<'a>>,
+    pub mini_heaps: Vec<*mut MiniHeap>,
     rng: Rng,
     offset: usize,
     attached_offset: Comparatomic<AtomicU64>,
     object_size: usize,
 }
 
-impl<'a, const N: usize> ShuffleVector<'a, N> {
+impl<const N: usize> ShuffleVector<N> {
     pub fn refill_from(
         &self,
         mh_offset: usize,
@@ -112,7 +112,7 @@ impl<'a, const N: usize> ShuffleVector<'a, N> {
         }
     }
 
-    pub fn malloc(&mut self) -> *mut MiniHeap<'a> {
+    pub fn malloc(&mut self) -> *mut MiniHeap {
         assert!(!self.is_exhausted());
         let entry = self.pop().unwrap();
 
@@ -138,7 +138,7 @@ impl<'a, const N: usize> ShuffleVector<'a, N> {
         });
     }
 
-    pub fn ptr_from_offset(&self, offset: Entry) -> *mut MiniHeap<'a> {
+    pub fn ptr_from_offset(&self, offset: Entry) -> *mut MiniHeap {
         assert!(offset.mh_offset < self.mini_heaps.len());
 
         unsafe {

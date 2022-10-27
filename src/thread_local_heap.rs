@@ -8,18 +8,18 @@ use crate::{
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-pub struct ThreadLocalHeap<'a> {
-    shuffle_vector: Rc<RefCell<[ShuffleVector<'a, MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS]>>,
-    global_heap: GlobalHeap<'a>,
+pub struct ThreadLocalHeap {
+    shuffle_vector: Rc<RefCell<[ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS]>>,
+    global_heap: GlobalHeap,
     current: u64,
 }
 
-impl<'a> ThreadLocalHeap<'a> {
+impl ThreadLocalHeap {
     pub fn current(&self) -> u64 {
         self.current
     }
 
-    pub fn memalign<'b: 'a>(&'b mut self, alignment: usize, size: usize) -> Option<*mut ()> {
+    pub fn memalign(&mut self, alignment: usize, size: usize) -> Option<*mut ()> {
         if alignment != 0 && alignment & (alignment - 1) == 0 {
             let size = size.max(8);
             if alignment <= std::mem::size_of::<u64>() {
@@ -45,7 +45,7 @@ impl<'a> ThreadLocalHeap<'a> {
         }
     }
 
-    fn alloc_slow_path<'b: 'a>(&'b self, size_class: usize) -> *mut MiniHeap<'a> {
+    fn alloc_slow_path(&self, size_class: usize) -> *mut MiniHeap {
         match self.shuffle_vector.borrow_mut().get_mut(size_class) {
             Some(ref mut vector) if vector.local_refill() => vector.malloc(),
             Some(vector) => {
@@ -56,10 +56,7 @@ impl<'a> ThreadLocalHeap<'a> {
             None => unreachable!(),
         }
     }
-    fn small_alloc_global_refill<'b>(&'a self, size_class: usize)
-    where
-        'b: 'a,
-    {
+    fn small_alloc_global_refill(&self, size_class: usize) {
         let mut vector = self.shuffle_vector.borrow();
 
         let size_max = SizeMap.bytes_size_for_class(size_class);
@@ -69,7 +66,7 @@ impl<'a> ThreadLocalHeap<'a> {
             .small_alloc_mini_heaps(size_class, size_max, vector, current);
     }
 
-    pub fn release_all<'b: 'a>(&'a mut self) {
+    pub fn release_all(&mut self) {
         self.shuffle_vector
             .borrow_mut()
             .iter_mut()
@@ -81,10 +78,7 @@ impl<'a> ThreadLocalHeap<'a> {
             });
     }
 
-    pub unsafe fn malloc<'b>(&'b mut self, size: usize) -> *mut ()
-    where
-        'b: 'a,
-    {
+    pub unsafe fn malloc(&mut self, size: usize) -> *mut () {
         if let Some(size_class) = SizeMap.get_size_class(size) {
             let mut vector = &mut self.shuffle_vector.borrow_mut()[size_class];
 
@@ -99,7 +93,7 @@ impl<'a> ThreadLocalHeap<'a> {
     }
 }
 
-impl<'a> Heap for ThreadLocalHeap<'a> {
+impl Heap for ThreadLocalHeap {
     type PointerType = *mut ();
     type MallocType = *mut ();
 

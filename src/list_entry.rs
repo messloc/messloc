@@ -25,7 +25,7 @@ impl ListEntry {
         self_id: AtomicMiniHeapId,
         mut new: *mut (),
     ) {
-        let new = unsafe { new.cast::<MiniHeap<'_>>().as_mut().unwrap() };
+        let new = unsafe { new.cast::<MiniHeap>().as_mut().unwrap() };
         let old_id = new.get_free_list_id();
         assert!(!new.is_large_alloc());
 
@@ -46,7 +46,7 @@ impl ListEntry {
                     let mem = self.prev.load(Ordering::AcqRel).unwrap();
                     let prev_list = unsafe {
                         mem.load(Ordering::AcqRel)
-                            .cast::<MiniHeap<'_>>()
+                            .cast::<MiniHeap>()
                             .as_ref()
                             .unwrap()
                             .free_list
@@ -85,7 +85,7 @@ impl ListEntry {
                     .next
                     .load_unwrapped(Ordering::AcqRel)
                     .load(Ordering::AcqRel)
-                    .cast::<MiniHeap<'_>>()
+                    .cast::<MiniHeap>()
                     .as_mut()
                     .unwrap();
 

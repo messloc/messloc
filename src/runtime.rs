@@ -1,10 +1,11 @@
 use std::{
+    alloc::Layout,
     cell::{Ref, RefCell, RefMut},
     ffi::c_int,
     mem::{size_of, MaybeUninit},
     ops::Deref,
     process::id,
-    ptr::{addr_of_mut, null},
+    ptr::{addr_of_mut, null, NonNull},
     rc::Rc,
     sync::{atomic::Ordering, Arc, Mutex, MutexGuard, PoisonError},
     thread::{current, yield_now},
@@ -29,18 +30,18 @@ use crate::{
     MAX_MERGE_SETS, MAX_SPLIT_LIST_SIZE, MESHES_PER_MAP, NUM_BINS,
 };
 
-pub struct FastWalkTime<'a> {
+pub struct FastWalkTime {
     pid: u32,
-    pub global_heap: GlobalHeap<'a>,
-    pub merge_set: Mutex<MergeSetWithSplits<'a>>,
+    pub global_heap: GlobalHeap,
+    pub merge_set: Mutex<MergeSetWithSplits>,
     pub signal_fd: i32,
-    pub thread_local_heap: ThreadLocalHeap<'a>,
+    pub thread_local_heap: Rc<RefCell<ThreadLocalHeap>>,
 }
 
-impl<'a> FastWalkTime<'a> {
+impl FastWalkTime {
     pub fn without_heap() -> MaybeUninit<Self> {
         let mut runtime = MaybeUninit::uninit();
-        let ptr: *mut FastWalkTime<'_> = runtime.as_mut_ptr();
+        let ptr: *mut FastWalkTime = runtime.as_mut_ptr();
         unsafe {
             addr_of_mut!((*ptr).pid).write(std::process::id());
             addr_of_mut!((*ptr).merge_set).write(Mutex::new(MergeSetWithSplits::default()));
@@ -91,9 +92,8 @@ impl<'a> FastWalkTime<'a> {
         (args.start_routine)(args.args)
     }
 
-    pub fn exit_thread(&'a mut self, ret_val: *mut ()) {
-        let mut heap = &mut self.thread_local_heap;
-        heap.release_all();
+    pub fn exit_thread(&mut self, ret_val: *mut ()) {
+        self.thread_local_heap.borrow_mut().release_all();
         unsafe { pthread_exit(ret_val as *mut libc::c_void) };
     }
 
@@ -136,15 +136,15 @@ impl<'a> FastWalkTime<'a> {
     }
 }
 
-pub struct Runtime<'a>(pub Arc<FastWalkTime<'a>>);
+pub struct Runtime(pub Arc<FastWalkTime>);
 
-impl<'a> Runtime<'a> {
+impl Runtime {
     pub fn init() {
-        let mut runtime = MaybeUninit::<FastWalkTime<'_>>::uninit();
+        let mut runtime = MaybeUninit::<FastWalkTime>::uninit();
         let mut heap = GlobalHeap::init(runtime);
     }
 
-    pub fn share(&'a self) -> Self {
+    pub fn share(&self) -> Self {
         Runtime(Arc::clone(&self.0))
     }
 
@@ -152,9 +152,18 @@ impl<'a> Runtime<'a> {
         todo!();
         // self.pid = id();
     }
+
+    pub unsafe fn allocate(&self, layout: Layout) -> *mut u8 {
+        let mut heap = self.0.thread_local_heap.borrow_mut();
+        heap.malloc(layout.size()) as *mut u8
+    }
+
+    pub unsafe fn deallocate(&self, ptr: *mut u8, layout: Layout) {
+        self.thread_local_heap.borrow_mut().free(ptr as *mut ());
+    }
 }
 
-impl PartialEq<Self> for Runtime<'_> {
+impl PartialEq<Self> for Runtime {
     fn eq(&self, rhs: &Self) -> bool {
         // This is a hack to ensure that partial eq can be implemented on other types
         // Runtime in a singleton instance and hence can be ignored from the partialeq
@@ -164,8 +173,8 @@ impl PartialEq<Self> for Runtime<'_> {
     }
 }
 
-impl<'a> Deref for Runtime<'a> {
-    type Target = Arc<FastWalkTime<'a>>;
+impl Deref for Runtime {
+    type Target = Arc<FastWalkTime>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
