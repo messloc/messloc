@@ -32,7 +32,7 @@ impl<const N: usize> RelaxedBitmapBase<N> {
     pub fn invert(&mut self) {
         self.bits.iter_mut().for_each(|bit| {
             *bit = !*bit;
-        })
+        });
     }
 
     pub fn set_all(&mut self, mut bit_count: usize) {
@@ -123,11 +123,11 @@ where
                     let ok = self
                         .internal_type
                         .set_at(*num, usize::try_from(off).unwrap());
-                    if !ok {
+                    if ok {
+                        false
+                    } else {
                         off += 1;
                         true
-                    } else {
-                        false
                     }
                 }
             }
@@ -243,7 +243,7 @@ impl<const N: usize> BitmapBase for RelaxedBitmapBase<N> {
     }
 
     fn invert(&mut self) {
-        self.invert()
+        self.invert();
     }
 
     fn in_use_count(&self) -> u64 {
@@ -293,7 +293,7 @@ impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
         self.bits.iter_mut().for_each(|bit| {
             let val = bit.load(Ordering::Acquire);
             bit.store(!val, Ordering::Release);
-        })
+        });
     }
 
     fn in_use_count(&self) -> u64 {

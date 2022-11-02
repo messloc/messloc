@@ -23,17 +23,17 @@ use crate::{
     list_entry::{ListEntry, Listable},
     meshable_arena::PageType,
     one_way_mmap_heap::Heap,
-    runtime::Runtime,
+    runtime::Messloc,
     span::{self, Span},
     utils::builtin_prefetch,
     MAX_MESHES, MAX_SMALL_SIZE, PAGE_SIZE,
 };
 
 pub struct MiniHeap {
-    runtime: Runtime,
+    runtime: Messloc,
     object_size: usize,
     pub span_start: *mut Self,
-    pub free_list: Rc<RefCell<ListEntry>>,
+    pub free_list: ListEntry,
     bitmap: Rc<RefCell<Bitmap<AtomicBitmapBase<4>>>>,
     span: Span,
     //   internal::Bitmap _bitmap;           // 32 bytes 32
@@ -44,7 +44,7 @@ pub struct MiniHeap {
     flags: Flags,
     //   MiniHeapID _nextMeshed{};           // 4        64
     current: Comparatomic<AtomicU64>,
-    pub next_mashed: AtomicOption<AtomicMiniHeapId>,
+    pub next_mashed: MiniHeapId,
 }
 
 impl MiniHeap {
@@ -75,20 +75,14 @@ impl MiniHeap {
         todo!()
     }
 
-    pub fn get_mini_heap(&self, id: &AtomicOption<AtomicMiniHeapId>) -> *mut MiniHeap {
-        let mh = unsafe {
-            self.runtime
-                .0
-                .global_heap
-                .arena
-                .lock()
-                .unwrap()
-                .mh_allocator
-                .get_mut(id)
-        };
-        builtin_prefetch(mh as *const _ as *mut ());
-
-        mh
+    #[allow(clippy::unused_self)]
+    pub fn get_mini_heap(&self, id: &MiniHeapId) -> *mut MiniHeap {
+        if let MiniHeapId::HeapPointer(mh) = id {
+            builtin_prefetch(id as *const _ as *mut ());
+            *mh
+        } else {
+            unreachable!()
+        }
     }
 
     pub fn max_count(&self) -> u32 {
@@ -112,11 +106,18 @@ impl MiniHeap {
     }
 
     pub unsafe fn malloc_at(&self, offset: usize) -> *mut () {
-        let arena = self.runtime.0.global_heap.arena.lock().unwrap().arena_begin;
+        let arena = self
+            .runtime
+            .0
+            .lock()
+            .unwrap()
+            .global_heap
+            .arena
+            .lock()
+            .unwrap()
+            .arena_begin;
 
-        if !self.bitmap().borrow_mut().try_to_set(offset) {
-            null_mut()
-        } else {
+        if self.bitmap().borrow_mut().try_to_set(offset) {
             let object_size = if self.is_large_alloc() {
                 self.span.length as usize * PAGE_SIZE
             } else {
@@ -127,6 +128,8 @@ impl MiniHeap {
                 .cast::<u8>()
                 .add(offset * object_size)
                 .cast()
+        } else {
+            null_mut()
         }
     }
 
@@ -153,6 +156,7 @@ impl MiniHeap {
         self.track_meshed_span(src);
     }
 
+        #[allow(clippy::needless_for_each)]
     pub fn free_mini_heap_locked(&mut self, mini_heap: *mut (), untrack: bool) {
         let mut to_free: [MaybeUninit<*mut ()>; MAX_MESHES] = MaybeUninit::uninit_array();
 
@@ -167,7 +171,16 @@ impl MiniHeap {
 
         let to_free = unsafe { MaybeUninit::array_assume_init(to_free) };
 
-        let begin = self.runtime.0.global_heap.arena.lock().unwrap().arena_begin;
+        let begin = self
+            .runtime
+            .0
+            .lock()
+            .unwrap()
+            .global_heap
+            .arena
+            .lock()
+            .unwrap()
+            .arena_begin;
 
         to_free.iter().for_each(|heap| {
             let mh = unsafe { heap.cast::<MiniHeap>().as_mut().unwrap() };
@@ -186,16 +199,20 @@ impl MiniHeap {
             unsafe {
                 self.runtime
                     .0
+                    .lock()
+                    .unwrap()
                     .global_heap
                     .arena
                     .lock()
                     .unwrap()
                     .mh_allocator
-                    .free(mini_heap)
+                    .free(mini_heap);
             };
 
             self.runtime
                 .0
+                .lock()
+                .unwrap()
                 .global_heap
                 .mini_heap_count
                 .fetch_sub(1, Ordering::AcqRel);
@@ -203,42 +220,31 @@ impl MiniHeap {
     }
 
     pub fn untrack_mini_heap_locked(&self, mut mh: *mut ()) {
-        let freelist = &self.runtime.0.global_heap.free_lists.0;
-        let empty = &freelist[0].borrow();
-        let full = &freelist[1].borrow();
-        let partial = &freelist[2].borrow();
-
+        let freelist = &self.runtime.0.lock().unwrap().global_heap.free_lists.0;
         let miniheap = unsafe { mh.cast::<MiniHeap>().as_mut().unwrap() };
         let size_class = miniheap.size_class() as usize;
 
         let mut list = match &miniheap.free_list_id() {
-            FreeListId::Empty => Some(&empty[size_class].0),
-            FreeListId::Full => Some(&full[size_class].0),
-            FreeListId::Partial => Some(&partial[size_class].0),
+            FreeListId::Empty => Some(&freelist[0][size_class].0),
+            FreeListId::Full => Some(&freelist[1][size_class].0),
+            FreeListId::Partial => Some(&freelist[2][size_class].0),
             _ => None,
         }
         .unwrap() as *const _ as *mut ListEntry;
 
-        let free_list = miniheap.free_list.borrow();
-        free_list.remove(list as *mut ());
+        miniheap.free_list.remove(list);
     }
 
-    pub fn track_meshed_span(&self, src: &MiniHeap) {
-        unsafe {
-            match &self.next_mashed.load(Ordering::AcqRel) {
-                Some(mesh) => unsafe {
-                    let mut mesh = mesh
-                        .load(Ordering::AcqRel)
-                        .cast::<MiniHeap>()
-                        .as_mut()
-                        .unwrap();
-                    mesh.track_meshed_span(src);
-                },
-                _ => self.next_mashed.store_unwrapped(
-                    AtomicMiniHeapId::new(&src as *const _ as *mut ()),
-                    Ordering::AcqRel,
-                ),
-            };
+    pub fn track_meshed_span(&mut self, src: &MiniHeap) {
+        match self.next_mashed {
+            MiniHeapId::Head => {
+                self.next_mashed = MiniHeapId::HeapPointer(&src as *const _ as *mut MiniHeap);
+            }
+            MiniHeapId::HeapPointer(mh) => {
+                let heap = unsafe { mh.as_mut().unwrap() };
+                heap.track_meshed_span(src);
+            }
+            MiniHeapId::None => {}
         }
     }
 
@@ -258,11 +264,9 @@ impl MiniHeap {
         self.current() != 0
     }
 
-    pub fn set_attached(&self, current: u64, free_list: *mut ListEntry) {
+    pub fn set_attached(&mut self, current: u64, free_list: *mut ListEntry) {
         self.current.store(current, Ordering::Release);
-        let list = self.free_list.borrow();
-
-        list.remove(free_list as *mut ());
+        self.free_list.remove(free_list);
         self.set_free_list_id(FreeListId::Attached);
     }
 
@@ -318,18 +322,8 @@ impl MiniHeap {
         loop {
             count += 1;
             unsafe {
-                if let Some(next) = &mh.next_mashed.load(Ordering::AcqRel) {
-                    let mh = unsafe {
-                        self.runtime
-                            .0
-                            .global_heap
-                            .arena
-                            .lock()
-                            .unwrap()
-                            .mh_allocator
-                            .get_mut(&mh.next_mashed)
-                    };
-                    builtin_prefetch(mh as *const _ as *mut ());
+                if let MiniHeapId::HeapPointer(next) = mh.next_mashed {
+                    builtin_prefetch(next as *const _ as *mut ());
                 } else {
                     break;
                 }
@@ -339,25 +333,8 @@ impl MiniHeap {
         count
     }
 
-    pub fn for_each_meshed<F>(&self, func: &F)
-    where
-        F: Fn(&MiniHeap) -> bool,
-    {
-        loop {
-            let value = unsafe { self.next_mashed.load(Ordering::AcqRel) };
-
-            if !func(self) && let Some(next_mashed) = value {
-
-               let mh = self.get_mini_heap(&self.next_mashed);
-                unsafe {
-               mh.as_ref().unwrap().for_each_meshed(func);
-                }
-            }
-        }
-    }
-
-    pub fn set_free_list(&self, free_list: ListEntry) {
-        self.free_list.replace(free_list);
+    pub fn set_free_list(&mut self, free_list: ListEntry) {
+        self.free_list = free_list;
     }
 
     pub fn get_free_list_id(&self) -> FreeListId {
@@ -545,52 +522,30 @@ impl Flags {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
-pub struct MiniHeapId(pub u32);
 
-impl MiniHeapId {}
-
-// FIXME:: replace this with MiniHeapId and make it atomic if all usages of MiniHeapId are atomic
-// FIXME:: consider whether we need to multiply the array size by size of usize
-pub struct AtomicMiniHeapId {
-    heap: AtomicOption<*mut ()>,
+#[derive(Debug, Default)]
+#[allow(clippy::module_name_repetitions)]
+pub enum MiniHeapId {
+    Head,
+    HeapPointer(*mut MiniHeap),
+    #[default]
+    None,
 }
 
-impl AtomicMiniHeapId {
-    pub fn new(ptr: *mut ()) -> Self {
-        AtomicMiniHeapId {
-            heap: AtomicOption::new(ptr),
-        }
+impl MiniHeapId {
+    pub fn new(ptr: *mut MiniHeap) -> Self {
+        MiniHeapId::HeapPointer(ptr)
     }
 
     pub unsafe fn get(&self, index: usize) -> *mut () {
-        let ptr = self.load(Ordering::AcqRel) as *mut MiniHeap;
-        ptr.add(index) as *mut ()
-    }
-
-    pub fn load(&self, ordering: Ordering) -> *mut () {
-        unsafe { self.heap.load_unwrapped(ordering) }
-    }
-
-    pub fn store(&self, value: *mut (), ordering: Ordering) {
-        self.heap.store_unwrapped(value, ordering)
+        match self {
+            MiniHeapId::HeapPointer(mh) => mh.add(index) as *mut (),
+            _ => unreachable!(),
+        }
     }
 
     pub fn is_head(&self) -> bool {
-        self.load(Ordering::Acquire) == null::<()>() as *mut ()
-    }
-}
-
-impl Default for AtomicMiniHeapId {
-    fn default() -> Self {
-        AtomicMiniHeapId::new(null_mut())
-    }
-}
-
-impl Clone for AtomicMiniHeapId {
-    fn clone(&self) -> Self {
-        let val = self.load(Ordering::AcqRel);
-        AtomicMiniHeapId::new(val as *const _ as *mut ())
+        matches!(self, MiniHeapId::Head)
     }
 }
 
@@ -598,16 +553,18 @@ impl Clone for AtomicMiniHeapId {
 macro_rules! for_each_meshed {
     ($mh: tt $func: block) => {{
         let result = loop {
-            let value = unsafe { $mh.next_mashed.load(Ordering::AcqRel) };
-            let mut result = false;
-            result = $func;
-            if result && let Some(next_mashed) = value {
-                                   let mh = $mh.get_mini_heap(&$mh.next_mashed);
-                                    } else {
-                                        break true;
-                                    }
+            if let MiniHeapId::HeapPointer(value) = $mh.next_mashed {
+                let mut result = false;
+                result = $func;
+                if result && let p @ &MiniHeapId::HeapPointer(val) = &$mh.next_mashed {
+                                                           let mh = $mh.get_mini_heap(&p);
+                                                            } else {
+                                                                break true;
+                                                            }
+            } else {
+                todo!()
+            }
         };
-
         result
     }};
 }

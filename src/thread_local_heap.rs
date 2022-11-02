@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 pub struct ThreadLocalHeap {
-    shuffle_vector: Rc<RefCell<[ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS]>>,
+    shuffle_vector: [ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS],
     global_heap: GlobalHeap,
     current: u64,
 }
@@ -45,48 +45,38 @@ impl ThreadLocalHeap {
         }
     }
 
-    fn alloc_slow_path(&self, size_class: usize) -> *mut MiniHeap {
-        match self.shuffle_vector.borrow_mut().get_mut(size_class) {
-            Some(ref mut vector) if vector.local_refill() => vector.malloc(),
-            Some(vector) => {
-                self.small_alloc_global_refill(size_class);
-                vector.re_init();
-                vector.malloc()
-            }
-            None => unreachable!(),
-        }
+    fn alloc_slow_path(&mut self, size_class: usize) {
+        self.small_alloc_global_refill(size_class);
     }
-    fn small_alloc_global_refill(&self, size_class: usize) {
-        let mut vector = self.shuffle_vector.borrow();
 
+    fn small_alloc_global_refill(&mut self, size_class: usize) {
         let size_max = SizeMap.bytes_size_for_class(size_class);
         let current = self.current;
 
-        self.global_heap
-            .small_alloc_mini_heaps(size_class, size_max, vector, current);
+        self.global_heap.small_alloc_mini_heaps(
+            size_class,
+            size_max,
+            &self.shuffle_vector,
+            current,
+        );
     }
 
     pub fn release_all(&mut self) {
-        self.shuffle_vector
-            .borrow_mut()
-            .iter_mut()
-            .for_each(|mut sv| {
-                sv.refill_mini_heaps();
-                sv.mini_heaps.iter().for_each(|mh| {
-                    self.global_heap.release_mini_heap_locked(*mh);
-                });
+        self.shuffle_vector.iter_mut().for_each(|mut sv| {
+            sv.refill_mini_heaps();
+            sv.mini_heaps.iter().for_each(|mh| {
+                self.global_heap.release_mini_heap_locked(*mh);
             });
+        });
     }
 
     pub unsafe fn malloc(&mut self, size: usize) -> *mut () {
         if let Some(size_class) = SizeMap.get_size_class(size) {
-            let mut vector = &mut self.shuffle_vector.borrow_mut()[size_class];
-
-            if vector.is_exhausted() {
-                self.alloc_slow_path(size_class) as *mut ()
-            } else {
-                vector.malloc() as *mut ()
+            if self.shuffle_vector[size_class].is_exhausted_and_no_refill() {
+                self.alloc_slow_path(size_class);
             }
+
+            self.shuffle_vector[size_class].malloc() as *mut ()
         } else {
             self.global_heap.malloc(size) as *mut ()
         }

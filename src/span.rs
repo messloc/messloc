@@ -40,6 +40,7 @@ impl Span {
     }
 }
 
+#[allow(clippy::module_name_repetitions)]
 pub struct SpanList([ArrayVec<Span, 1024>; SPAN_CLASS_COUNT as usize]);
 
 impl SpanList {

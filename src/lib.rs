@@ -5,17 +5,22 @@
     // missing_docs,
 )]
 #![allow(unused)]
+#![allow(clippy::needless_for_each)]
+#![allow(clippy::module_name_repetitions)]
+
 #![feature(type_alias_impl_trait)]
 #![feature(let_chains)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
+#![feature(assert_matches)]
+
 #![recursion_limit = "256"]
 use std::{
     alloc::{GlobalAlloc, Layout},
     ptr::NonNull,
 };
 
-use crate::runtime::Runtime;
+pub use crate::runtime::Messloc;
 
 #[cfg(feature = "allocator_api")]
 use std::alloc::{AllocError, Allocator};
@@ -70,7 +75,7 @@ const MIN_STRING_LEN: usize = 8;
 const ENABLED_SHUFFLE_ON_INIT: bool = true;
 const MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR: usize = 24;
 
-unsafe impl GlobalAlloc for Runtime {
+unsafe impl GlobalAlloc for Messloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.allocate(layout)
     }
@@ -83,7 +88,7 @@ unsafe impl GlobalAlloc for Runtime {
 }
 
 #[cfg(feature = "allocator-api")]
-unsafe impl<'a> Allocator for Runtime<'a> {
+unsafe impl Allocator for Messloc {
     fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
         self.allocate(layout).ok_or(AllocError)
     }

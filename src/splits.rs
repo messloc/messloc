@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::mem::MaybeUninit;
 use std::rc::Rc;
 
+#[allow(clippy::module_name_repetitions)]
 pub struct MergeSetWithSplits {
     pub merge_set: [Option<(*mut MiniHeap, *mut MiniHeap)>; MAX_MERGE_SETS],
     pub left: [Option<*mut MiniHeap>; MAX_SPLIT_LIST_SIZE],
@@ -43,3 +44,5 @@ unsafe impl Madvisable for &mut [&MiniHeap] {
         (*self.get_mut(0).unwrap()) as *const MiniHeap as *mut c_void
     }
 }
+
+unsafe impl Send for MergeSetWithSplits {}

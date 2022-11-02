@@ -1,19 +1,20 @@
 use std::cell::RefCell;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::{Range, RangeFrom, RangeFull, RangeInclusive};
-use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use rand_xoshiro::rand_core::{RngCore, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
 pub struct Rng {
-    rng: Rc<RefCell<Xoshiro256PlusPlus>>,
+    rng: Arc<Mutex<Xoshiro256PlusPlus>>,
 }
 
 impl Rng {
     pub fn init() -> Rng {
         Rng {
-            rng: Rc::new(RefCell::new(Xoshiro256PlusPlus::seed_from_u64(0))),
+            rng: Arc::new(Mutex::new(Xoshiro256PlusPlus::seed_from_u64(0))),
         }
     }
 
@@ -38,6 +39,6 @@ impl Rng {
     }
 
     pub fn next(&self) -> u64 {
-        self.rng.borrow_mut().next_u64()
+        self.rng.lock().unwrap().next_u64()
     }
 }

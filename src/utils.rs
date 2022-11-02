@@ -8,6 +8,7 @@ use std::io::{Error, Result};
 use std::mem::MaybeUninit;
 use std::os::unix::prelude::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::ptr::addr_of_mut;
 
 pub fn sigdump() -> i32 {
     libc::SIGRTMIN() + 8
@@ -164,7 +165,7 @@ pub unsafe fn fstat(fildes: i32, buf: &mut MaybeUninit<Stat>) -> Result<()> {
     // FIXME:: check if this is UB or not
     OutputWrapper(libc::fstat(
         fildes,
-        &mut buf.assume_init_mut().0 as *mut libc::stat,
+        addr_of_mut!(buf.assume_init_mut().0),
     ))
     .into()
 }

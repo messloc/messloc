@@ -7,7 +7,10 @@ use std::{
     process::id,
     ptr::{addr_of_mut, null, NonNull},
     rc::Rc,
-    sync::{atomic::Ordering, Arc, Mutex, MutexGuard, PoisonError},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard, PoisonError,
+    },
     thread::{current, yield_now},
     time::Duration,
 };
@@ -16,9 +19,10 @@ use libc::{pthread_attr_t, pthread_t, sigset_t, SIG_BLOCK};
 
 use crate::{
     cheap_heap::CheapHeap,
+    comparatomic::Comparatomic,
     global_heap::GlobalHeap,
     list_entry::ListEntry,
-    mini_heap::{AtomicMiniHeapId, MiniHeap},
+    mini_heap::{MiniHeapId, MiniHeap},
     one_way_mmap_heap::Heap,
     rng::Rng,
     splits::MergeSetWithSplits,
@@ -33,9 +37,9 @@ use crate::{
 pub struct FastWalkTime {
     pid: u32,
     pub global_heap: GlobalHeap,
-    pub merge_set: Mutex<MergeSetWithSplits>,
+    pub merge_set: MergeSetWithSplits,
     pub signal_fd: i32,
-    pub thread_local_heap: Rc<RefCell<ThreadLocalHeap>>,
+    pub thread_local_heap: Arc<Mutex<ThreadLocalHeap>>,
 }
 
 impl FastWalkTime {
@@ -44,7 +48,7 @@ impl FastWalkTime {
         let ptr: *mut FastWalkTime = runtime.as_mut_ptr();
         unsafe {
             addr_of_mut!((*ptr).pid).write(std::process::id());
-            addr_of_mut!((*ptr).merge_set).write(Mutex::new(MergeSetWithSplits::default()));
+            addr_of_mut!((*ptr).merge_set).write(MergeSetWithSplits::default());
             addr_of_mut!((*ptr).signal_fd).write(0);
         }
         runtime
@@ -93,7 +97,7 @@ impl FastWalkTime {
     }
 
     pub fn exit_thread(&mut self, ret_val: *mut ()) {
-        self.thread_local_heap.borrow_mut().release_all();
+        self.thread_local_heap.lock().unwrap().release_all();
         unsafe { pthread_exit(ret_val as *mut libc::c_void) };
     }
 
@@ -127,7 +131,7 @@ impl FastWalkTime {
                     &buf as *const _ as *mut libc::c_void,
                     std::mem::size_of::<libc::signalfd_siginfo>(),
                 )
-                .unwrap()
+                .unwrap();
             }
 
             //TODO:: add a retry check somehow and a counter if needed
@@ -136,16 +140,18 @@ impl FastWalkTime {
     }
 }
 
-pub struct Runtime(pub Arc<FastWalkTime>);
+pub struct Messloc(pub Arc<Mutex<FastWalkTime>>);
 
-impl Runtime {
-    pub fn init() {
+impl Messloc {
+    #[must_use]
+    pub fn init() -> Messloc {
         let mut runtime = MaybeUninit::<FastWalkTime>::uninit();
-        let mut heap = GlobalHeap::init(runtime);
+        GlobalHeap::init(runtime)
     }
 
+    #[must_use]
     pub fn share(&self) -> Self {
-        Runtime(Arc::clone(&self.0))
+        Self(Arc::clone(&self.0))
     }
 
     pub fn update_pid(&mut self) {
@@ -153,17 +159,27 @@ impl Runtime {
         // self.pid = id();
     }
 
+    #[allow(clippy::missing_safety_doc)]
+    #[must_use]
     pub unsafe fn allocate(&self, layout: Layout) -> *mut u8 {
-        let mut heap = self.0.thread_local_heap.borrow_mut();
+        let runtime = self.0.lock().unwrap();
+        let mut heap = runtime.thread_local_heap.lock().unwrap();
         heap.malloc(layout.size()) as *mut u8
     }
 
+    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn deallocate(&self, ptr: *mut u8, layout: Layout) {
-        self.thread_local_heap.borrow_mut().free(ptr as *mut ());
+        self.0
+            .lock()
+            .unwrap()
+            .thread_local_heap
+            .lock()
+            .unwrap()
+            .free(ptr as *mut ());
     }
 }
 
-impl PartialEq<Self> for Runtime {
+impl PartialEq<Self> for Messloc {
     fn eq(&self, rhs: &Self) -> bool {
         // This is a hack to ensure that partial eq can be implemented on other types
         // Runtime in a singleton instance and hence can be ignored from the partialeq
@@ -173,8 +189,8 @@ impl PartialEq<Self> for Runtime {
     }
 }
 
-impl Deref for Runtime {
-    type Target = Arc<FastWalkTime>;
+impl Deref for Messloc {
+    type Target = Arc<Mutex<FastWalkTime>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -187,7 +203,9 @@ pub struct StartThreadArgs {
 }
 
 #[allow(clippy::type_complexity)]
-pub struct FreeList(pub [Rc<RefCell<[(ListEntry, u64); NUM_BINS]>>; 3]);
+pub struct FreeList(pub [[(ListEntry, Comparatomic<AtomicU64>); NUM_BINS]; 3]);
+
+unsafe impl Send for FreeList {}
 
 impl FreeList {
     pub fn init() -> Self {
