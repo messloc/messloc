@@ -11,6 +11,7 @@ jobs:
         uses: actions/checkout@v3
       - run: echo "Repo ${{ github.repository }} cloned to VM"
       - run: echo "Job is ready for testing."
+      - run: rustup default nightly
       - name: Run cargo check
         run: cargo check
       - run: echo "job's status is ${{ job.status }}."
