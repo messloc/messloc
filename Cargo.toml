@@ -2,10 +2,14 @@
 name = "messloc"
 version = "0.0.0"
 edition = "2021"
+authors = ["Conrad Ludjugate", "MunirG05", "Dylan-DPC"]
+description = "Better memory allocator using using novel meshing algorithms."
 license = "MIT OR Apache-2.0"
-description = "Port of Mesh Allocator"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 rust-version = "1.64.0"
+repository = "https://github.com/messloc/messloc/"
+keywords = ["memory allocator", "better allocator"]
+
 
 [dependencies]
 arrayvec = "0.7"

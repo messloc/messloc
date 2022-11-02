@@ -1,3 +1,23 @@
+//! Better memory allocation using novel meshing algorithms
+//!
+//! Provides a better memory allocator than rustc's default allocator.
+//! These are some of the advantages of messloc over rustc's default:
+//! - Memory efficiency (less memory used while doing tasks)
+//! - Drop-in replacement (no messing around required)
+//!
+//! 
+//! 
+//! Operating systems supported:
+//!  - [x] Linux
+//!  - [x] MacOS
+//!  - BSD (BSDs have not been tested, please open an issue if messloc is working for you)
+//!  - Windows (Work in progress)
+//!
+//! MAB: messloc requires Rust nightly. stable is not compatible with the features needed.
+
+
+
+
 #![cfg_attr(feature = "allocator-api", feature(allocator_api))]
 #![warn(
     rust_2018_idioms,
@@ -71,6 +91,7 @@ const ENABLED_SHUFFLE_ON_INIT: bool = true;
 const MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR: usize = 24;
 
 unsafe impl GlobalAlloc for Runtime {
+    
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.allocate(layout)
     }
