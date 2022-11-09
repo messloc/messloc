@@ -4,8 +4,9 @@ use std::fs::create_dir_all;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::process::id;
+use std::ptr::null_mut;
 
-const TMP_DIR: &str = "/tmp";
+const TMP_DIR: &str = "target/debug/";
 
 pub fn open_shm_span_file(size: usize) -> i32 {
     let span_dir = {
@@ -14,16 +15,14 @@ pub fn open_shm_span_file(size: usize) -> i32 {
         span_dir.push("XXXXXX");
         span_dir
     };
-    let path = span_dir.as_os_str().as_bytes().as_ptr() as *const c_char;
+    let path = span_dir.as_os_str().as_bytes().as_ptr() as *const c_char as *mut c_char;
 
-    //TODO:: This is likely UB but there is no other way to get this conversion done.
-    // Try looking at storing the path in some other type
-    let path = unsafe { std::mem::transmute::<_, *mut c_char>(path) };
     unsafe {
         let fd = mkstemp(path).unwrap();
-        unlink(path).unwrap();
+        // unlink(path).unwrap();
         ftruncate(fd, size).unwrap();
         let _ = fcntl(fd);
+
         fd
     }
 }

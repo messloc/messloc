@@ -22,11 +22,11 @@ use crate::{
     comparatomic::Comparatomic,
     global_heap::GlobalHeap,
     list_entry::ListEntry,
-    mini_heap::{MiniHeapId, MiniHeap},
+    meshable_arena::MeshableArena,
+    mini_heap::{MiniHeap, MiniHeapId},
     one_way_mmap_heap::Heap,
     rng::Rng,
     splits::MergeSetWithSplits,
-    thread_local_heap::ThreadLocalHeap,
     utils::{
         create_signal_mask, madvise, new_signal_fd, pthread_create, pthread_exit, read,
         sig_proc_mask, sigdump, signalfd_siginfo,
@@ -36,24 +36,11 @@ use crate::{
 
 pub struct FastWalkTime {
     pid: u32,
-    pub global_heap: GlobalHeap,
-    pub merge_set: MergeSetWithSplits,
     pub signal_fd: i32,
-    pub thread_local_heap: Arc<Mutex<ThreadLocalHeap>>,
+    pub global_heap: GlobalHeap,
 }
 
 impl FastWalkTime {
-    pub fn without_heap() -> MaybeUninit<Self> {
-        let mut runtime = MaybeUninit::uninit();
-        let ptr: *mut FastWalkTime = runtime.as_mut_ptr();
-        unsafe {
-            addr_of_mut!((*ptr).pid).write(std::process::id());
-            addr_of_mut!((*ptr).merge_set).write(MergeSetWithSplits::default());
-            addr_of_mut!((*ptr).signal_fd).write(0);
-        }
-        runtime
-    }
-
     pub fn init(&mut self) {
         //TODO: consider whether to init handlers or not
         //
@@ -80,7 +67,6 @@ impl FastWalkTime {
         //TODO: consider if we need a segfault handler or not
         todo!()
     }
-
     pub fn create_thread(
         &self,
         thread: libc::pthread_t,
@@ -96,10 +82,12 @@ impl FastWalkTime {
         (args.start_routine)(args.args)
     }
 
+    /*
     pub fn exit_thread(&mut self, ret_val: *mut ()) {
-        self.thread_local_heap.lock().unwrap().release_all();
+        self.global_heap.release_all();
         unsafe { pthread_exit(ret_val as *mut libc::c_void) };
     }
+    */
 
     pub unsafe fn sig_proc_mask(&self, mask: *mut sigset_t) {
         //TODO: add signal mutex if needed
@@ -111,13 +99,6 @@ impl FastWalkTime {
 
         let buf = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
         let map_count: usize = buf.parse().unwrap();
-
-        let mesh_count = (MESHES_PER_MAP * map_count as f64).trunc();
-        self.global_heap
-            .arena
-            .lock()
-            .unwrap()
-            .set_max_mesh_count(map_count);
     }
 
     pub fn start_background_thread(&self) {
@@ -145,8 +126,11 @@ pub struct Messloc(pub Arc<Mutex<FastWalkTime>>);
 impl Messloc {
     #[must_use]
     pub fn init() -> Messloc {
-        let mut runtime = MaybeUninit::<FastWalkTime>::uninit();
-        GlobalHeap::init(runtime)
+        Messloc(Arc::new(Mutex::new(FastWalkTime {
+            pid: 0,
+            signal_fd: 0,
+            global_heap: GlobalHeap::init(),
+        })))
     }
 
     #[must_use]
@@ -162,20 +146,13 @@ impl Messloc {
     #[allow(clippy::missing_safety_doc)]
     #[must_use]
     pub unsafe fn allocate(&self, layout: Layout) -> *mut u8 {
-        let runtime = self.0.lock().unwrap();
-        let mut heap = runtime.thread_local_heap.lock().unwrap();
+        let mut heap = &mut self.0.lock().unwrap().global_heap;
         heap.malloc(layout.size()) as *mut u8
     }
 
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn deallocate(&self, ptr: *mut u8, layout: Layout) {
-        self.0
-            .lock()
-            .unwrap()
-            .thread_local_heap
-            .lock()
-            .unwrap()
-            .free(ptr as *mut ());
+        self.0.lock().unwrap().global_heap.free(ptr as *mut ());
     }
 }
 
@@ -189,26 +166,25 @@ impl PartialEq<Self> for Messloc {
     }
 }
 
-impl Deref for Messloc {
-    type Target = Arc<Mutex<FastWalkTime>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 pub struct StartThreadArgs {
     start_routine: fn(*mut ()) -> *mut (),
     args: *mut (),
 }
 
 #[allow(clippy::type_complexity)]
-pub struct FreeList(pub [[(ListEntry, Comparatomic<AtomicU64>); NUM_BINS]; 3]);
+pub struct FreeList(pub [[(ListEntry, Comparatomic<AtomicU64>); 1]; 3]);
 
 unsafe impl Send for FreeList {}
 
 impl FreeList {
     pub fn init() -> Self {
-        todo!()
+        let free_list = std::array::from_fn(|_| {
+            [(
+                ListEntry::new(MiniHeapId::None, MiniHeapId::None),
+                Comparatomic::new(0u64),
+            )]
+        });
+
+        FreeList(free_list)
     }
 }

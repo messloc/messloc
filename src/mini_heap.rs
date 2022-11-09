@@ -16,12 +16,11 @@ use lazy_static::__Deref;
 use libc::c_void;
 
 use crate::{
-    atomic_enum::AtomicOption,
     bitmap::{AtomicBitmapBase, Bitmap, BitmapBase, RelaxedBitmapBase},
     class_array::CLASS_ARRAY,
     comparatomic::Comparatomic,
     list_entry::{ListEntry, Listable},
-    meshable_arena::PageType,
+    meshable_arena::{Page, PageType},
     one_way_mmap_heap::Heap,
     runtime::Messloc,
     span::{self, Span},
@@ -31,6 +30,7 @@ use crate::{
 
 pub struct MiniHeap {
     runtime: Messloc,
+    pub arena_begin: *mut Page,
     object_size: usize,
     pub span_start: *mut Self,
     pub free_list: ListEntry,
@@ -106,25 +106,16 @@ impl MiniHeap {
     }
 
     pub unsafe fn malloc_at(&self, offset: usize) -> *mut () {
-        let arena = self
-            .runtime
-            .0
-            .lock()
-            .unwrap()
-            .global_heap
-            .arena
-            .lock()
-            .unwrap()
-            .arena_begin;
+        let arena = self.arena_begin;
 
         if self.bitmap().borrow_mut().try_to_set(offset) {
             let object_size = if self.is_large_alloc() {
-                self.span.length as usize * PAGE_SIZE
+                self.span.length * PAGE_SIZE
             } else {
                 (self.object_size as f32 + 0.5).trunc() as usize
             };
             arena
-                .add(self.span.offset as usize)
+                .add(self.span.offset)
                 .cast::<u8>()
                 .add(offset * object_size)
                 .cast()
@@ -154,85 +145,6 @@ impl MiniHeap {
             }
         });
         self.track_meshed_span(src);
-    }
-
-        #[allow(clippy::needless_for_each)]
-    pub fn free_mini_heap_locked(&mut self, mini_heap: *mut (), untrack: bool) {
-        let mut to_free: [MaybeUninit<*mut ()>; MAX_MESHES] = MaybeUninit::uninit_array();
-
-        let mh = unsafe { mini_heap.cast::<MiniHeap>().as_mut().unwrap() };
-        let mut last = 0;
-
-        crate::for_each_meshed!(mh {
-            to_free[last].write(mh as *const _ as *mut ());
-            last += 1;
-            false
-        });
-
-        let to_free = unsafe { MaybeUninit::array_assume_init(to_free) };
-
-        let begin = self
-            .runtime
-            .0
-            .lock()
-            .unwrap()
-            .global_heap
-            .arena
-            .lock()
-            .unwrap()
-            .arena_begin;
-
-        to_free.iter().for_each(|heap| {
-            let mh = unsafe { heap.cast::<MiniHeap>().as_mut().unwrap() };
-            let mh_type = if mh.is_meshed() {
-                PageType::Meshed
-            } else {
-                PageType::Dirty
-            };
-            let span_start = mh.span_start;
-            unsafe { self.free(span_start as *mut ()) };
-
-            if untrack && !mh.is_meshed() {
-                self.untrack_mini_heap_locked(mini_heap);
-            }
-
-            unsafe {
-                self.runtime
-                    .0
-                    .lock()
-                    .unwrap()
-                    .global_heap
-                    .arena
-                    .lock()
-                    .unwrap()
-                    .mh_allocator
-                    .free(mini_heap);
-            };
-
-            self.runtime
-                .0
-                .lock()
-                .unwrap()
-                .global_heap
-                .mini_heap_count
-                .fetch_sub(1, Ordering::AcqRel);
-        });
-    }
-
-    pub fn untrack_mini_heap_locked(&self, mut mh: *mut ()) {
-        let freelist = &self.runtime.0.lock().unwrap().global_heap.free_lists.0;
-        let miniheap = unsafe { mh.cast::<MiniHeap>().as_mut().unwrap() };
-        let size_class = miniheap.size_class() as usize;
-
-        let mut list = match &miniheap.free_list_id() {
-            FreeListId::Empty => Some(&freelist[0][size_class].0),
-            FreeListId::Full => Some(&freelist[1][size_class].0),
-            FreeListId::Partial => Some(&freelist[2][size_class].0),
-            _ => None,
-        }
-        .unwrap() as *const _ as *mut ListEntry;
-
-        miniheap.free_list.remove(list);
     }
 
     pub fn track_meshed_span(&mut self, src: &MiniHeap) {
@@ -522,7 +434,6 @@ impl Flags {
     }
 }
 
-
 #[derive(Debug, Default)]
 #[allow(clippy::module_name_repetitions)]
 pub enum MiniHeapId {
@@ -557,10 +468,10 @@ macro_rules! for_each_meshed {
                 let mut result = false;
                 result = $func;
                 if result && let p @ &MiniHeapId::HeapPointer(val) = &$mh.next_mashed {
-                                                           let mh = $mh.get_mini_heap(&p);
-                                                            } else {
-                                                                break true;
-                                                            }
+                                                                   let mh = $mh.get_mini_heap(&p);
+                                                                    } else {
+                                                                        break true;
+                                                                    }
             } else {
                 todo!()
             }

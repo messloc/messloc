@@ -1,7 +1,7 @@
-use crate::MAP_SHARED;
 use libc::{
     c_char, c_void, pthread_attr_t, pthread_t, signalfd_siginfo, sigset_t, FALLOC_FL_KEEP_SIZE,
-    FALLOC_FL_PUNCH_HOLE, F_SETFD, MADV_DONTNEED, MAP_FIXED, PROT_READ, PROT_WRITE, SIGRTMIN,
+    FALLOC_FL_PUNCH_HOLE, F_SETFD, MADV_DONTNEED, MAP_FIXED, MAP_SHARED, PROT_READ, PROT_WRITE,
+    SIGRTMIN,
 };
 use std::ffi::c_int;
 use std::io::{Error, Result};
@@ -27,11 +27,14 @@ pub unsafe fn mprotect_write(addr: *mut c_void, size: usize) -> Result<()> {
 }
 
 pub unsafe fn mmap(addr: *mut c_void, fd: i32, size: usize, offset: usize) -> Result<*mut c_void> {
+    //TODO: replace it with libc's mmap when issue has been figured out
+    Ok(memmap2::MmapRaw::map_raw(fd)?.as_mut_ptr() as *mut c_void)
+    /*
     let ptr = libc::mmap(
         addr,
         size,
         PROT_READ | PROT_WRITE,
-        MAP_SHARED | MAP_FIXED,
+        MAP_FIXED | MAP_SHARED,
         fd,
         i64::try_from(offset).unwrap(),
     );
@@ -41,6 +44,7 @@ pub unsafe fn mmap(addr: *mut c_void, fd: i32, size: usize, offset: usize) -> Re
     } else {
         Ok(ptr)
     }
+    */
 }
 
 pub unsafe fn mkstemp(file_path: *mut c_char) -> Result<i32> {
@@ -163,11 +167,7 @@ pub struct Stat(libc::stat);
 
 pub unsafe fn fstat(fildes: i32, buf: &mut MaybeUninit<Stat>) -> Result<()> {
     // FIXME:: check if this is UB or not
-    OutputWrapper(libc::fstat(
-        fildes,
-        addr_of_mut!(buf.assume_init_mut().0),
-    ))
-    .into()
+    OutputWrapper(libc::fstat(fildes, addr_of_mut!(buf.assume_init_mut().0))).into()
 }
 
 pub fn popcountl(bit: u64) -> u64 {

@@ -2,7 +2,6 @@ use std::marker::PhantomData;
 use std::ptr::addr_of_mut;
 use std::sync::{atomic::Ordering, Arc, Mutex};
 
-use crate::atomic_enum::AtomicOption;
 use crate::mini_heap::FreeListId;
 use crate::mini_heap::{MiniHeap, MiniHeapId};
 use crate::runtime::Messloc;

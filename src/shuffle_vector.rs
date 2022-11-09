@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::ops::DerefMut;
+use std::ptr::null_mut;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 
@@ -21,8 +22,20 @@ pub struct ShuffleVector<const N: usize> {
     attached_offset: Comparatomic<AtomicU64>,
     object_size: usize,
 }
-
 impl<const N: usize> ShuffleVector<N> {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            start: std::array::from_fn(|_| Comparatomic::new(null_mut())),
+            array: RefCell::new(std::array::from_fn(|_| Entry::new(0, 0))),
+            mini_heaps: vec![],
+            rng: Rng::init(),
+            offset: Comparatomic::new(0),
+            attached_offset: Comparatomic::new(0),
+            object_size: 0,
+        }
+    }
+
     pub fn refill_from(
         &self,
         mh_offset: usize,
@@ -124,6 +137,10 @@ impl<const N: usize> ShuffleVector<N> {
         let entry = self.pop().unwrap();
 
         self.ptr_from_offset(&entry)
+    }
+
+    pub fn as_cloned_vector(&self) -> Vec<*mut MiniHeap> {
+        self.mini_heaps.clone()
     }
 
     pub fn pop(&self) -> Option<Entry> {

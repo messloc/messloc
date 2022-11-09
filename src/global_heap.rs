@@ -16,9 +16,9 @@ use std::{
 use arrayvec::ArrayVec;
 
 use crate::{
-    atomic_enum::AtomicOption,
     bitmap::BitmapBase,
     cheap_heap::CheapHeap,
+    class_array::CLASS_ARRAY,
     comparatomic::Comparatomic,
     for_each_meshed,
     list_entry::ListEntry,
@@ -29,8 +29,10 @@ use crate::{
     runtime::{self, FastWalkTime, FreeList, Messloc},
     shuffle_vector::{self, ShuffleVector},
     span::Span,
+    splits::{MergeElement, MergeSetWithSplits, SplitType},
     BINNED_TRACKER_MAX_EMPTY, MAX_MERGE_SETS, MAX_MESHES, MAX_MESHES_PER_ITERATION,
-    MAX_SPLIT_LIST_SIZE, MINI_HEAP_REFILL_GOAL_SIZE, MIN_STRING_LEN, NUM_BINS, OCCUPANCY_CUTOFF,
+    MAX_SHUFFLE_VECTOR_LENGTH, MAX_SIZE, MAX_SMALL_SIZE, MAX_SPLIT_LIST_SIZE,
+    MINI_HEAP_REFILL_GOAL_SIZE, MIN_OBJECT_SIZE, MIN_STRING_LEN, NUM_BINS, OCCUPANCY_CUTOFF,
     PAGE_SIZE,
 };
 
@@ -43,16 +45,18 @@ pub struct GlobalHeapStats {
 }
 
 pub struct GlobalHeap {
-    runtime: Messloc,
     pub arena: Mutex<MeshableArena>,
-    last_mesh_effective: AtomicBool,
-    mesh_epoch: Epoch,
+    pub shuffle_vector: [ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS],
     pub free_lists: FreeList,
-    access_lock: Mutex<()>,
-    rng: Rng,
-    mesh_period_ms: Duration,
-    stats: GlobalHeapStats,
+    pub merge_set: MergeSetWithSplits<MAX_SPLIT_LIST_SIZE>,
+    pub access_lock: Mutex<()>,
+    pub mesh_epoch: Epoch,
+    pub rng: Rng,
+    pub last_mesh_effective: AtomicBool,
+    pub mesh_period_ms: Duration,
+    pub stats: GlobalHeapStats,
     pub mini_heap_count: AtomicUsize,
+    pub current: u64,
 }
 
 /// Returns the minimum number of pages needed to
@@ -63,39 +67,45 @@ const fn page_count(bytes: usize) -> usize {
 }
 
 impl GlobalHeap {
-    pub fn init(mut runtime: MaybeUninit<FastWalkTime>) -> Messloc {
-        let runtime_ptr = runtime.as_mut_ptr();
+    pub fn init() -> GlobalHeap {
+        //let mesh_period = std::env::var("MESH_PERIOD_MS").unwrap();
+        //let period = mesh_period.parse().unwrap();
+        let period = 0;
 
-        let arena = MeshableArena::init();
-
-        let mesh_period = std::env::var("MESH_PERIOD_MS").unwrap();
-        let period = mesh_period.parse().unwrap();
-
-        let mut heap = MaybeUninit::<GlobalHeap>::uninit();
-        let ptr = heap.as_mut_ptr();
-        unsafe {
-            addr_of_mut!((*ptr).arena).write(Mutex::new(arena));
-            addr_of_mut!((*ptr).stats).write(GlobalHeapStats::default());
-            addr_of_mut!((*ptr).last_mesh_effective).write(AtomicBool::new(false));
-            addr_of_mut!((*ptr).mini_heap_count).write(AtomicUsize::default());
-            addr_of_mut!((*ptr).last_mesh_effective).write(AtomicBool::new(false));
-            addr_of_mut!((*ptr).free_lists).write(FreeList::init());
-            addr_of_mut!((*ptr).mesh_epoch).write(Epoch::default());
-            addr_of_mut!((*ptr).rng).write(Rng::init());
-            addr_of_mut!((*ptr).mesh_period_ms).write(Duration::from_millis(period));
+        GlobalHeap {
+            arena: Mutex::new(MeshableArena::init()),
+            shuffle_vector: std::array::from_fn(|_| ShuffleVector::new()),
+            free_lists: FreeList::init(),
+            merge_set: MergeSetWithSplits::new(),
+            access_lock: Mutex::new(()),
+            mesh_epoch: Epoch::default(),
+            rng: Rng::init(),
+            last_mesh_effective: AtomicBool::new(false),
+            mesh_period_ms: Duration::new(0, 0),
+            stats: GlobalHeapStats::default(),
+            mini_heap_count: AtomicUsize::new(0),
+            current: 0,
         }
-        let heap = unsafe { heap.assume_init() };
-
-        unsafe {
-            addr_of_mut!((*runtime_ptr).global_heap).write(heap);
-        }
-
-        unsafe { Messloc(Arc::new(Mutex::new(runtime.assume_init()))) }
     }
 
     /// Allocate a region of memory that can satisfy the requested bytes
     pub fn malloc(&mut self, bytes: usize) -> *const () {
-        self.alloc_page_aligned(1, page_count(bytes))
+        if let Some(size_class) = SizeMap.get_size_class(bytes) {
+            if self.shuffle_vector[size_class].is_exhausted_and_no_refill() {
+                self.small_alloc_global_refill(size_class);
+            }
+
+            self.shuffle_vector[size_class].malloc() as *mut ()
+        } else {
+            self.alloc_page_aligned(1, page_count(bytes))
+        }
+    }
+
+    fn small_alloc_global_refill(&mut self, size_class: usize) {
+        let size_max = SizeMap.bytes_size_for_class(size_class);
+        let current = self.current;
+
+        self.small_alloc_mini_heaps(size_class, size_max, current);
     }
 
     /// Allocate the requested number of pages
@@ -134,7 +144,14 @@ impl GlobalHeap {
             );
             let remaining = mini_heap.in_use_count() - 1;
             let was_set = mini_heap.clear_if_not_free(offset);
-            let ptr = unsafe { self.arena.lock().unwrap().arena_begin.add(offset) as *mut () };
+            let ptr = unsafe {
+                self.arena
+                    .lock()
+                    .unwrap()
+                    .arena_begin
+                    .cast::<MiniHeap>()
+                    .add(offset) as *mut ()
+            };
 
             let mh = {
                 let arena = self.arena.lock().unwrap();
@@ -294,7 +311,7 @@ impl GlobalHeap {
                 .sum();
 
             unsafe {
-                let merge_sets = &mut self.runtime.0.lock().unwrap().merge_set;
+                let merge_sets = &mut self.merge_set;
                 merge_sets.madvise()
             };
 
@@ -308,22 +325,22 @@ impl GlobalHeap {
         }
     }
 
-    pub fn small_alloc_mini_heaps<const N: usize>(
-        &mut self,
-        size_class: usize,
-        object_size: usize,
-        shuffle_vector: &[ShuffleVector<N>],
-        current: u64,
-    ) {
-        let vectors: Vec<_> = shuffle_vector.iter().flat_map(|v| &v.mini_heaps).collect();
-
-        vectors
+    pub fn small_alloc_mini_heaps(&mut self, size_class: usize, object_size: usize, current: u64) {
+        let mini_heaps: Vec<_> = self
+            .shuffle_vector
             .iter()
-            .for_each(|mut mh| self.release_mini_heap_locked(**mh));
+            .flat_map(|x| x.as_cloned_vector())
+            .collect();
+
+        mini_heaps.iter().for_each(|mini_heap| {
+            let mini_heap = unsafe { mini_heap.as_mut().unwrap() };
+            mini_heap.unset_attached();
+            self.post_free_locked(mini_heap, mini_heap.in_use_count());
+        });
 
         assert!(size_class < NUM_BINS);
 
-        let (mut mini_heaps, mut bytes_free) = self.select_for_reuse(size_class, &vectors, current);
+        let (mut mini_heaps, mut bytes_free) = self.select_for_reuse(size_class, current);
 
         if bytes_free < MINI_HEAP_REFILL_GOAL_SIZE && !mini_heaps.len() == mini_heaps.capacity() {
             let object_count = MIN_STRING_LEN.max(PAGE_SIZE / object_size);
@@ -388,13 +405,23 @@ impl GlobalHeap {
     pub fn mesh_size_class_locked(&mut self, size_class: usize) -> usize {
         let merge_set_count = self.shifted_splitting(size_class);
 
-        let mut merge_set = {
-            let mut runtime = self.runtime.0.lock().unwrap();
-            runtime.merge_set.merge_set
+        let mut merge_set: Vec<(*mut MiniHeap, *mut MiniHeap)> = {
+            self.merge_set
+                .0
+                .iter()
+                .filter_map(|merge| match merge {
+                    MergeElement {
+                        mini_heap: dst,
+                        direction: SplitType::MergedWith(src),
+                    } => Some((*dst, *src)),
+                    _ => None,
+                })
+                .collect()
         };
 
-        let mesh_count = merge_set.iter_mut().try_fold(0, |mut mesh_count, opt| {
-            if let Some((mut dst, mut src)) = opt {
+        let mesh_count = merge_set
+            .into_iter()
+            .try_fold(0, |mut mesh_count, (mut dst, mut src)| {
                 let (src_obj, dst_obj) = unsafe { (src.as_mut().unwrap(), dst.as_mut().unwrap()) };
 
                 let dst_count = dst_obj.mesh_count();
@@ -423,21 +450,13 @@ impl GlobalHeap {
                     }
                 }
                 Some(mesh_count)
-            } else {
-                None
-            }
-        });
+            });
 
         self.flush_bin_locked(size_class);
         mesh_count.unwrap()
     }
 
-    pub fn select_for_reuse(
-        &self,
-        size_class: usize,
-        mini_heaps: &[&*mut MiniHeap],
-        current: u64,
-    ) -> (Vec<*mut MiniHeap>, usize) {
+    pub fn select_for_reuse(&self, size_class: usize, current: u64) -> (Vec<*mut MiniHeap>, usize) {
         let (mut mini_heaps, mut bytes_free) =
             self.fill_from_list(current, &self.free_lists.0[2][size_class]);
         if bytes_free < MINI_HEAP_REFILL_GOAL_SIZE {
@@ -493,79 +512,87 @@ impl GlobalHeap {
         (mini_heaps, bytes_free)
     }
 
-    pub fn shifted_splitting(&self, size_class: usize) -> Option<usize> {
+    pub fn shifted_splitting(&mut self, size_class: usize) -> Option<usize> {
         let free_lists = &self.free_lists.0;
-        let runtime = &self.runtime.0.lock().unwrap();
-        let left_set = runtime.merge_set.left;
-        let right_set = runtime.merge_set.right;
-        let splits = &runtime.merge_set;
         let mh = &free_lists[0].get(size_class).unwrap().0;
         let (left, right) = self.half_split(size_class);
-        if left > 0 && right > 0 {
-            let l = unsafe { splits.left.first().unwrap().unwrap().as_mut().unwrap() };
+        let mut left_set = vec![];
+        let mut right_set = vec![];
+        self.merge_set
+            .0
+            .iter()
+            .filter(|split| {
+                !matches!(
+                    split,
+                    MergeElement {
+                        direction: SplitType::MergedWith(_),
+                        ..
+                    }
+                )
+            })
+            .for_each(|merge| {
+                let MergeElement {
+                    mini_heap,
+                    direction,
+                } = merge;
+                match direction {
+                    SplitType::Left => {
+                        left_set.push(*mini_heap);
+                    }
+                    SplitType::Right => {
+                        right_set.push(*mini_heap);
+                    }
+                    _ => {}
+                }
+            });
 
-            assert_eq!((*l).bitmap().borrow_mut().byte_count(), 32usize);
+        Some((0..left).fold(0, |mut count, j| {
+            let mut idx_right = j;
+            count += (0..right.min(64))
+                .scan((0, 0), |(mut count, mut found_count), i| {
+                    let bitmap1 = unsafe { &left_set.get(j).unwrap().as_mut().unwrap().bitmap() };
+                    let bitmap2 = unsafe { &right_set.get(j).unwrap().as_mut().unwrap().bitmap() };
 
-            let merge_set_count = 0;
-            Some((0..left).fold(0, move |mut count, j| {
-                let mut idx_right = j;
-                count += (0..right.min(64))
-                    .scan((0, 0), move |(mut count, mut found_count), i| {
-                        let bitmap1 = unsafe {
-                            &left_set.get(j).unwrap().unwrap().as_mut().unwrap().bitmap()
-                        };
-                        let bitmap2 = unsafe {
-                            &right_set
-                                .get(j)
-                                .unwrap()
-                                .unwrap()
-                                .as_mut()
-                                .unwrap()
-                                .bitmap()
-                        };
+                    let is_meshable = bitmap1
+                        .borrow()
+                        .internal_type
+                        .bits()
+                        .iter()
+                        .zip(bitmap2.borrow().internal_type.bits().iter())
+                        .fold(0u64, |mut acc, (lb, rb)| {
+                            acc |= lb & rb;
+                            acc
+                        });
 
-                        let is_meshable = bitmap1
-                            .borrow()
-                            .internal_type
-                            .bits()
-                            .iter()
-                            .zip(bitmap2.borrow().internal_type.bits().iter())
-                            .fold(0u64, |mut acc, (lb, rb)| {
-                                acc |= lb & rb;
-                                acc
-                            });
+                    if is_meshable == 0 {
+                        found_count += 1;
 
-                        if is_meshable == 0 {
-                            found_count += 1;
+                        left_set[j] = null_mut();
+                        right_set[idx_right] = null_mut();
+                        idx_right += 1;
+                        let merge_set_count = self.mesh_found(&left_set[..], &right_set[..]);
 
-                            // left_set[j] = None;
-                            // right_set[idx_right] = None;
-                            idx_right += 1;
-                            let merge_set_count =
-                                self.mesh_found(&left_set[..], &right_set[..], merge_set_count);
-
-                            if found_count > MAX_MESHES_PER_ITERATION || count < MAX_MERGE_SETS {
-                                None
-                            } else {
-                                Some((count, found_count))
-                            }
+                        if found_count > MAX_MESHES_PER_ITERATION || count < MAX_MERGE_SETS {
+                            None
                         } else {
                             Some((count, found_count))
                         }
-                    })
-                    .fold(0, |count, _| count);
-                count
-            }))
-        } else {
-            None
-        }
+                    } else {
+                        Some((count, found_count))
+                    }
+                })
+                .fold(0, |count, _| count);
+            count
+        }))
     }
-    pub fn half_split(&self, size_class: usize) -> (usize, usize) {
+
+    pub fn half_split(&mut self, size_class: usize) -> (usize, usize) {
         let lists = &self.free_lists.0;
         let mut next = &lists[2][size_class].0.next;
 
         let mut left_size = 0usize;
         let mut right_size = 0usize;
+        let mut last_added = 0;
 
         while let MiniHeapId::HeapPointer(mh_id) = next && left_size < MAX_SPLIT_LIST_SIZE && right_size < MAX_SPLIT_LIST_SIZE
         {
@@ -574,38 +601,37 @@ impl GlobalHeap {
             };
             next = &mh.free_list.next;
             if mh.is_meshing_candidate() || mh.fullness() >= OCCUPANCY_CUTOFF {
-                let mut runtime = self.runtime.0.lock().unwrap();
-                if left_size <= right_size {
-                    runtime.merge_set.left[left_size] = Some(mh as *const _ as *mut MiniHeap);
-                    left_size += 1;
-                } else {
-                    runtime.merge_set.right[right_size] = Some(mh as *const _ as *mut MiniHeap);
-                    right_size += 1;
-                }
+                let (index, mut free) = self.merge_set.0.iter().enumerate().find(|(key, ele)| ele.mini_heap.is_null()).unwrap();
+                let direction = if left_size <= right_size { left_size +=1; SplitType::Left } else { right_size += 1; SplitType::Right };
+                    free = &MergeElement {
+                        mini_heap: mh as *const _ as *mut MiniHeap,
+                        direction,
+                    };
 
-                let mut rng = &self.rng;
-                self.rng.shuffle(&mut runtime.merge_set.left, 0, left_size);
-                self.rng.shuffle(&mut runtime.merge_set.right, 0, right_size);
+                    last_added = index;
             }
         }
 
+        let mut rng = &self.rng;
+        self.rng.shuffle(&mut self.merge_set.0, 0, last_added);
         (left_size, right_size)
     }
 
-    pub fn mesh_found(
-        &self,
-        left: &[Option<*mut MiniHeap>],
-        right: &[Option<*mut MiniHeap>],
-        mut merge_set_count: usize,
-    ) -> usize {
-        let mut runtime = self.runtime.0.lock().unwrap();
-        let merge_set_count = left.iter().zip(right.iter()).fold(merge_set_count, |mut acc, (l, r)| {
-        if let Some(le) = l && unsafe { le.as_mut().unwrap().is_meshing_candidate() } && let Some(ri) = r &&  unsafe { ri.as_mut().unwrap().is_meshing_candidate() } {
-           runtime.deref_mut().merge_set.merge_set[merge_set_count] = Some((*le, *ri));
-           acc += 1;
-        }
-        acc
-        });
+    pub fn mesh_found(&mut self, left: &[*mut MiniHeap], right: &[*mut MiniHeap]) -> usize {
+        let merge_set_count =
+            left.iter()
+                .enumerate()
+                .zip(right.iter())
+                .fold(0, |mut acc, ((key, le), ri)| {
+                    if unsafe {
+                        le.as_mut().unwrap().is_meshing_candidate()
+                            && ri.as_mut().unwrap().is_meshing_candidate()
+                    } {
+                        self.merge_set.0[key].direction = SplitType::MergedWith(*ri);
+                    }
+                    acc += 1;
+                    acc
+                });
         merge_set_count
     }
 
@@ -696,7 +722,7 @@ impl GlobalHeap {
         let span = Span::default();
         let span_begin = arena.page_alloc(page_count, alignment);
         let mut mh = MiniHeap::with_object(span.clone(), object_count, object_size);
-        let mini_heap_id = unsafe { arena.mh_allocator.offset_for(buffer) };
+        let mini_heap_id = unsafe { arena.mh_allocator.offset_for(buffer as *mut ()) };
         unsafe { arena.track_miniheap(&span, buffer.cast()) };
 
         self.mini_heap_count.fetch_add(1, Ordering::Acquire);
@@ -706,7 +732,7 @@ impl GlobalHeap {
         if count > hwm {
             self.stats.high_water_mark.store(count, Ordering::Release);
         }
-        &mut mh as *mut MiniHeap
+        addr_of_mut!(mh)
     }
 
     fn alloc_miniheap(
@@ -760,7 +786,7 @@ impl Epoch {
     }
 
     pub fn set(&self, value: u64, ordering: Ordering) {
-        self.0.inner().store(value, ordering)
+        self.0.inner().store(value, ordering);
     }
 }
 trait Meshable {
@@ -783,4 +809,28 @@ pub enum List {
     Empty,
     Attached,
     Max,
+}
+
+struct SizeMap;
+
+impl SizeMap {
+    pub fn get_size_class(&self, size: usize) -> Option<usize> {
+        let idx = self.class_index_maybe(size)?;
+        Some(CLASS_ARRAY[idx] as usize)
+    }
+
+    pub fn class_index_maybe(&self, size: usize) -> Option<usize> {
+        // this is overlapping but allowed because it currently is the nicest way
+        // to write `MAX_SMALL_SIZE+1..MAX_SIZE`
+        #[allow(clippy::match_overlapping_arm)]
+        match size {
+            0..=MAX_SMALL_SIZE => Some((size + 7) >> 3),
+            ..=MAX_SIZE => Some((size + 127 + (120 << 7)) >> 7),
+            _ => None,
+        }
+    }
+
+    pub const fn bytes_size_for_class(&self, size: usize) -> usize {
+        1 << (size + crate::utils::stlog(MIN_OBJECT_SIZE))
+    }
 }

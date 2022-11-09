@@ -157,7 +157,7 @@ where
 
     pub fn track_meshed(&mut self, span: Span) {
         (0..span.length).for_each(|index| {
-            self.try_to_set(usize::try_from(span.offset + index).unwrap());
+            self.try_to_set(span.offset + index);
         });
     }
 

@@ -5,28 +5,33 @@ use crate::{MAX_MERGE_SETS, MAX_SPLIT_LIST_SIZE, NUM_BINS};
 use libc::c_void;
 use std::cell::RefCell;
 use std::mem::MaybeUninit;
+use std::ptr::null_mut;
 use std::rc::Rc;
 
+pub struct MergeElement {
+    pub mini_heap: *mut MiniHeap,
+    pub direction: SplitType,
+}
+
 #[allow(clippy::module_name_repetitions)]
-pub struct MergeSetWithSplits {
-    pub merge_set: [Option<(*mut MiniHeap, *mut MiniHeap)>; MAX_MERGE_SETS],
-    pub left: [Option<*mut MiniHeap>; MAX_SPLIT_LIST_SIZE],
-    pub right: [Option<*mut MiniHeap>; MAX_SPLIT_LIST_SIZE],
+pub struct MergeSetWithSplits<const N: usize>(pub [MergeElement; N]);
+
+pub enum SplitType {
+    MergedWith(*mut MiniHeap),
+    Left,
+    Right,
 }
 
-impl MergeSetWithSplits {
-    pub unsafe fn madvise(&mut self) {
-        let first = self.left.first();
+impl<const N: usize> MergeSetWithSplits<N> {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self(std::array::from_fn(|_| MergeElement {
+            mini_heap: null_mut(),
+            direction: SplitType::Left,
+        }))
     }
-}
-
-impl Default for MergeSetWithSplits {
-    fn default() -> Self {
-        Self {
-            merge_set: std::array::from_fn(|_| None),
-            left: std::array::from_fn(|_| None),
-            right: std::array::from_fn(|_| None),
-        }
+    pub unsafe fn madvise(&mut self) {
+        todo!()
     }
 }
 
@@ -45,4 +50,4 @@ unsafe impl Madvisable for &mut [&MiniHeap] {
     }
 }
 
-unsafe impl Send for MergeSetWithSplits {}
+unsafe impl<const N: usize> Send for MergeSetWithSplits<N> {}

@@ -7,17 +7,18 @@
 #![allow(unused)]
 #![allow(clippy::needless_for_each)]
 #![allow(clippy::module_name_repetitions)]
-
 #![feature(type_alias_impl_trait)]
 #![feature(let_chains)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(assert_matches)]
-
+#![feature(once_cell)]
 #![recursion_limit = "256"]
+#![deny(clippy::pedantic)]
 use std::{
     alloc::{GlobalAlloc, Layout},
     ptr::NonNull,
+    sync::LazyLock,
 };
 
 pub use crate::runtime::Messloc;
@@ -26,7 +27,6 @@ pub use crate::runtime::Messloc;
 use std::alloc::{AllocError, Allocator};
 
 mod arena_fs;
-mod atomic_enum;
 mod bitmap;
 mod cheap_heap;
 mod class_array;
@@ -43,17 +43,17 @@ mod runtime;
 mod shuffle_vector;
 mod span;
 mod splits;
-mod thread_local_heap;
 mod utils;
 
-const PAGE_SIZE: usize = 4096;
 const DATA_LEN: usize = 128;
+const PAGE_SIZE: usize = 4096;
 #[cfg(target_os = "linux")]
-const ARENA_SIZE: usize = 64 * 1024 * 1024 * 1024; // 64 GB
+const ARENA_SIZE: usize = 64 * 512 * 1024 * 1024;
+// const ARENA_SIZE: usize = 64 * 1024 * 1024 * 1024; // 64 GB
 #[cfg(target_os = "macos")]
 const ARENA_SIZE: usize = 32 * 1024 * 1024 * 1024; // 32 GB
 
-const SPAN_CLASS_COUNT: u32 = 256;
+const SPAN_CLASS_COUNT: usize = 256;
 const MIN_ARENA_EXPANSION: usize = 4096; // 16 MB in pages
 const MAX_SMALL_SIZE: usize = 1024;
 const MAX_SIZE: usize = 16384;
@@ -84,6 +84,24 @@ unsafe impl GlobalAlloc for Messloc {
         // SAFETY: `ptr` is guaranteed to point to valid memory allocated
         // by this allocator.
         self.deallocate(ptr, layout);
+    }
+}
+
+pub struct MessyLock(pub LazyLock<Messloc>);
+
+unsafe impl GlobalAlloc for MessyLock {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        self.0.allocate(layout)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        self.0.deallocate(ptr, layout);
+    }
+}
+
+impl MessyLock {
+    pub fn inner(&self) -> &Messloc {
+        &self.0
     }
 }
 
