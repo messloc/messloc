@@ -1,7 +1,7 @@
 use crate::comparatomic::Comparatomic;
 use crate::mini_heap::{MiniHeap, MiniHeapId};
 use crate::utils::mmap;
-use crate::ARENA_SIZE;
+use crate::{one_way_mmap_heap, ARENA_SIZE};
 use crate::{
     one_way_mmap_heap::{Heap, OneWayMmapHeap},
     PAGE_SIZE,
@@ -13,76 +13,39 @@ use std::sync::atomic::Ordering;
 use std::{mem::size_of, ptr::null_mut};
 
 pub struct CheapHeap<const ALLOC_SIZE: usize, const MAX_COUNT: usize> {
-    arena: *mut (),
     freelist: *mut (), // [*mut [u8; ALLOC_SIZE]; MAX_COUNT]
     arena_offset: usize,
-    index: [MiniHeapId; ARENA_SIZE / PAGE_SIZE], // [[u8; ALLOC_SIZE]; MAX_COUNT]
     freelist_offset: usize,
 }
 
-#[allow(clippy::new_without_default)]
 impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> CheapHeap<ALLOC_SIZE, MAX_COUNT> {
     pub fn new() -> Self {
-        let indices = std::array::from_fn(|_| MiniHeapId::None);
         let mut this = Self {
-            arena: null_mut(),
             freelist: null_mut(),
-            index: indices,
             arena_offset: 0,
             freelist_offset: 0,
         };
-
-        this.arena = unsafe { OneWayMmapHeap.malloc(ALLOC_SIZE * MAX_COUNT).cast() };
 
         this.freelist = unsafe {
             OneWayMmapHeap
                 .malloc(MAX_COUNT * size_of::<*mut [u8; ALLOC_SIZE]>())
                 .cast()
         };
-        this.index = unsafe { this.malloc(crate::meshable_arena::index_size()) };
         this
     }
 
-    pub fn index(&self, offset: usize) -> Option<&MiniHeapId> {
-        self.index.get(offset)
-    }
-
-    pub fn index_mut(&mut self, offset: usize) -> Option<&mut MiniHeapId> {
-        self.index.get_mut(offset)
-    }
-
-    pub fn store_indices(&mut self, keep_offset: usize, page_count: usize) {
-        let keep_id = self.index(keep_offset).unwrap();
-        unsafe {
-            let indices = &self.index[0] as *const _ as *mut MiniHeapId;
-            let count = std::mem::size_of::<MiniHeapId>();
-            (0..=page_count).for_each(|page| {
-                let page_ptr = indices.add(page);
-                std::ptr::copy(keep_id, page_ptr, count);
-            });
-        }
-    }
-
-    pub unsafe fn alloc(&mut self) -> *mut [u8; ALLOC_SIZE] {
+    pub unsafe fn alloc(&mut self) -> *mut () {
         if self.freelist_offset > 0 {
             self.freelist_offset -= 1;
             return self
                 .freelist
-                .cast::<*mut [u8; ALLOC_SIZE]>()
+                .cast::<*mut ()>()
                 .add(self.freelist_offset)
                 .read();
         }
 
         self.arena_offset += 1;
-        self.arena.cast::<MiniHeap>().add(self.arena_offset) as *mut _
-    }
-
-    fn arena_end(&self) -> *mut () {
-        unsafe { self.arena.cast::<MiniHeap>().add(MAX_COUNT) as *mut () }
-    }
-
-    pub unsafe fn offset_for(&self, ptr: *mut ()) -> u32 {
-        ptr.offset_from(self.arena) as u32
+        OneWayMmapHeap.malloc(ALLOC_SIZE)
     }
 
     pub unsafe fn assign(&mut self, data: *mut (), size: usize) {
@@ -105,17 +68,23 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_S
         MiniHeapId::HeapPointer(ptr as *mut MiniHeap)
     }
 
-    unsafe fn malloc(&mut self, size: usize) -> Self::MallocType {
+    unsafe fn malloc(&mut self, size: usize) -> *mut Self::MallocType {
         let addr = OneWayMmapHeap.malloc(size) as *mut Self;
-        let mut page_data: [MaybeUninit<MiniHeapId>; ARENA_SIZE / PAGE_SIZE] =
-            MaybeUninit::uninit().assume_init();
+        let page_data = OneWayMmapHeap.malloc(ARENA_SIZE / PAGE_SIZE) as *mut Self::PointerType;
 
-        (0..(ARENA_SIZE / PAGE_SIZE)).for_each(|page| {
-            let new_page = addr.add(page);
-            page_data[page].write(MiniHeapId::HeapPointer(new_page as *mut MiniHeap));
-        });
+        (0..ARENA_SIZE)
+            .step_by(PAGE_SIZE)
+            .enumerate()
+            .for_each(|(index, page)| {
+                let heap_addr = addr.add(page);
+                let page_addr = page_data.add(index);
+                let heap =
+                    OneWayMmapHeap.malloc(std::mem::size_of::<MiniHeapId>()) as *mut MiniHeapId;
+                heap.write(MiniHeapId::HeapPointer(null_mut()));
+                page_addr.copy_from(heap, 1);
+            });
 
-        std::mem::transmute::<_, Self::MallocType>(page_data)
+        page_data as *mut Self::MallocType
     }
 
     unsafe fn get_size(&mut self, _: *mut ()) -> usize {
@@ -130,17 +99,17 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_S
         );
         let ptr = ptr.cast::<[u8; ALLOC_SIZE]>();
 
-        debug_assert!(
-            (self.arena..self.arena_end()).contains(&(ptr as *mut ())),
-            "ptr must reside in our arena"
-        );
-
         //   self.freelist.add(self.freelist_offset).write(ptr as *mut ());
 
         self.freelist_offset += 1;
     }
 }
 
+impl<const AC: usize, const MC: usize> Default for CheapHeap<AC, MC> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 unsafe impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Sync
     for CheapHeap<ALLOC_SIZE, MAX_COUNT>
 {
@@ -182,14 +151,14 @@ impl DynCheapHeap {
         self.arena.add(self.arena_offset * self.alloc_size)
     }
 
-    fn arena_end(&self) -> *mut u8 {
+    const fn arena_end(&self) -> *mut u8 {
         unsafe { self.arena.add(self.alloc_size * self.max_count) }
     }
 }
 
 impl Heap for DynCheapHeap {
     type PointerType = *mut ();
-    type MallocType = *mut ();
+    type MallocType = ();
 
     unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
         todo!()

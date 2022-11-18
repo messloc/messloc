@@ -31,7 +31,7 @@ mod bitmap;
 mod cheap_heap;
 mod class_array;
 mod comparatomic;
-mod global_heap;
+pub mod global_heap;
 mod internal;
 mod list_entry;
 mod meshable_arena;
@@ -61,14 +61,14 @@ const MAP_SHARED: i32 = 1;
 const DIRTY_PAGE_THRESHOLD: usize = 32;
 const MAX_MESHES: usize = 256;
 const MAX_MERGE_SETS: usize = 4096;
-const MAX_SPLIT_LIST_SIZE: usize = 16384;
+const MAX_SPLIT_LIST_SIZE: usize = 1024;
 const NUM_BINS: usize = 25;
 const DEFAULT_MAX_MESH_COUNT: usize = 30000;
 const MAX_MESHES_PER_ITERATION: usize = 2500;
 const OCCUPANCY_CUTOFF: f64 = 0.8;
 const BINNED_TRACKER_MAX_EMPTY: u64 = 128;
 const MESHES_PER_MAP: f64 = 0.33;
-const MAX_SHUFFLE_VECTOR_LENGTH: usize = 256;
+const MAX_SHUFFLE_VECTOR_LENGTH: usize = 64;
 const MIN_OBJECT_SIZE: usize = 8;
 const MINI_HEAP_REFILL_GOAL_SIZE: usize = 4 * 1024;
 const MIN_STRING_LEN: usize = 8;
@@ -87,7 +87,7 @@ unsafe impl GlobalAlloc for Messloc {
     }
 }
 
-pub struct MessyLock(pub LazyLock<Messloc>);
+pub struct MessyLock(pub once_cell::sync::Lazy<Messloc>);
 
 unsafe impl GlobalAlloc for MessyLock {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {

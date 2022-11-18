@@ -9,7 +9,7 @@ pub struct MmapHeap {
 
 impl Heap for MmapHeap {
     type PointerType = *mut ();
-    type MallocType = *mut ();
+    type MallocType = ();
 
     unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
         todo!()

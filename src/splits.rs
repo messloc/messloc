@@ -1,8 +1,10 @@
 use crate::list_entry::ListEntry;
-use crate::mini_heap::MiniHeap;
+use crate::mini_heap::{MiniHeap, MiniHeapId};
+use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 use crate::utils;
 use crate::{MAX_MERGE_SETS, MAX_SPLIT_LIST_SIZE, NUM_BINS};
 use libc::c_void;
+use once_cell::race::OnceNonZeroUsize;
 use std::cell::RefCell;
 use std::mem::MaybeUninit;
 use std::ptr::null_mut;
@@ -30,13 +32,27 @@ impl<const N: usize> MergeSetWithSplits<N> {
             direction: SplitType::Left,
         }))
     }
+
+    pub fn alloc_new() -> *mut () {
+        let size = std::mem::size_of::<MergeElement>() * N;
+        let alloc = unsafe { OneWayMmapHeap.malloc(size) as *mut MergeElement };
+        (0..N).for_each(|split| unsafe {
+            let addr = alloc.add(split) as *mut MergeElement;
+            addr.write(MergeElement {
+                mini_heap: null_mut(),
+                direction: SplitType::Left,
+            });
+        });
+
+        alloc.cast()
+    }
     pub unsafe fn madvise(&mut self) {
         todo!()
     }
 }
 
 #[allow(clippy::missing_safety_doc)]
-pub(crate) unsafe trait Madvisable {
+pub unsafe trait Madvisable {
     fn as_mut_ptr_of_starting_addr(&mut self) -> *mut c_void;
 
     unsafe fn madvise(&mut self, size: usize) {

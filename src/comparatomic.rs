@@ -10,14 +10,15 @@ impl<T> Comparatomic<T>
 where
     T: Atomic,
 {
-    pub fn new(input: T::Innermost) -> Comparatomic<T> {
-        Comparatomic(T::make(input))
+    pub fn new(input: T::Innermost) -> Self {
+        Self(T::make(input))
     }
 
-    pub fn inner(&self) -> &T {
+    pub const fn inner(&self) -> &T {
         &self.0
     }
 
+    #[allow(clippy::missing_const_for_fn)]
     pub fn into_inner(self) -> T {
         self.0
     }
@@ -50,11 +51,11 @@ pub trait Atomic: Sized {
     fn store_value(&self, value: Self::Innermost, ordering: Ordering);
     fn fetch_add(&self, value: Self::Innermost, ordering: Ordering);
 }
-impl<T> PartialEq<Comparatomic<T>> for Comparatomic<T>
+impl<T> PartialEq<Self> for Comparatomic<T>
 where
     T: Atomic,
 {
-    fn eq(&self, other: &Comparatomic<T>) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         let left = self.0.load_value(Ordering::Acquire);
         let oth = other.0.load_value(Ordering::Acquire);
         let rhs = other
@@ -71,8 +72,8 @@ where
 
 impl Atomic for AtomicU64 {
     type Innermost = u64;
-    fn make(input: Self::Innermost) -> AtomicU64 {
-        AtomicU64::new(input)
+    fn make(input: Self::Innermost) -> Self {
+        Self::new(input)
     }
 
     fn cas(
@@ -100,8 +101,8 @@ impl Atomic for AtomicU64 {
 
 impl Atomic for AtomicU32 {
     type Innermost = u32;
-    fn make(input: Self::Innermost) -> AtomicU32 {
-        AtomicU32::new(input)
+    fn make(input: Self::Innermost) -> Self {
+        Self::new(input)
     }
 
     fn cas(
@@ -128,8 +129,8 @@ impl Atomic for AtomicU32 {
 }
 impl<T> Atomic for AtomicPtr<T> {
     type Innermost = *mut T;
-    fn make(input: Self::Innermost) -> AtomicPtr<T> {
-        AtomicPtr::new(input)
+    fn make(input: Self::Innermost) -> Self {
+        Self::new(input)
     }
 
     fn cas(
@@ -157,8 +158,8 @@ impl<T> Atomic for AtomicPtr<T> {
 
 impl Atomic for AtomicU8 {
     type Innermost = u8;
-    fn make(input: Self::Innermost) -> AtomicU8 {
-        AtomicU8::new(input)
+    fn make(input: Self::Innermost) -> Self {
+        Self::new(input)
     }
 
     fn cas(
@@ -186,8 +187,8 @@ impl Atomic for AtomicU8 {
 
 impl Atomic for AtomicBool {
     type Innermost = bool;
-    fn make(input: Self::Innermost) -> AtomicBool {
-        AtomicBool::new(input)
+    fn make(input: Self::Innermost) -> Self {
+        Self::new(input)
     }
 
     fn cas(
@@ -215,7 +216,7 @@ impl Atomic for AtomicBool {
 }
 
 impl From<Comparatomic<AtomicU64>> for u64 {
-    fn from(x: Comparatomic<AtomicU64>) -> u64 {
+    fn from(x: Comparatomic<AtomicU64>) -> Self {
         x.load(Ordering::AcqRel)
     }
 }

@@ -1,12 +1,12 @@
 #![feature(once_cell)]
 use messloc::{Messloc, MessyLock};
-use std::sync::LazyLock;
 
-// #[global_allocator]
-// static ALLOCATOR : MessyLock = MessyLock(LazyLock::new(|| Messloc::init()));
+#[global_allocator]
+static ALLOCATOR: MessyLock = MessyLock(once_cell::sync::Lazy::new(|| {
+    let messloc = Messloc::init();
+    messloc
+}));
 
 fn main() {
-    stacker::grow(16 * 1024 * 1024 * 1024, || {
-        let wtf = Messloc::init();
-    });
+    let _ = vec![1u8, 2, 3];
 }

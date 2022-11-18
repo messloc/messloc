@@ -1,4 +1,5 @@
 use crate::comparatomic::{Atomic, Comparatomic};
+use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 use crate::span::Span;
 use crate::utils::{ffsll, popcountl, stlog};
 use std::cell::Ref;
@@ -76,7 +77,7 @@ impl<const N: usize> RelaxedBitmapBase<N> {
 
 impl<const N: usize> Default for RelaxedBitmapBase<N> {
     fn default() -> Self {
-        RelaxedBitmapBase { bits: [0u64; N] }
+        Self { bits: [0u64; N] }
     }
 }
 
@@ -92,13 +93,20 @@ impl<T> Bitmap<T>
 where
     T: BitmapBase + PartialEq,
 {
+    pub fn alloc_new() -> *mut Self {
+        let size = std::mem::size_of::<Self>();
+        let alloc = unsafe { OneWayMmapHeap.malloc(size) as *mut Self };
+        T::write_default(alloc);
+        alloc
+    }
+
     pub const fn relaxed_with_bit_length<const N: usize>() -> Bitmap<RelaxedBitmapBase<N>> {
         Bitmap {
             internal_type: RelaxedBitmapBase::<N>::new(),
         }
     }
 
-    pub fn inner(&self) -> &T {
+    pub const fn inner(&self) -> &T {
         &self.internal_type
     }
 
@@ -183,6 +191,7 @@ where
         (item, position)
     }
 }
+
 impl<const N: usize> Bitmap<RelaxedBitmapBase<N>> {
     pub fn set_and_exchange_all(&self, mut bits: [u64; N], other: [u64; N]) -> [u64; N] {
         todo!()
@@ -209,8 +218,9 @@ impl Bitmap<AtomicBitmapBase<4>> {
     }
 }
 
-pub trait BitmapBase: PartialEq {
+pub trait BitmapBase: PartialEq + Sized {
     type Item: Into<u64>;
+    fn write_default(alloc: *mut Bitmap<Self>);
     fn bits(&self) -> &[Self::Item];
     fn get_bit(&self, num: usize) -> Option<u64>;
     fn set_at(&mut self, at: usize, position: usize) -> bool;
@@ -222,6 +232,14 @@ pub trait BitmapBase: PartialEq {
 
 impl<const N: usize> BitmapBase for RelaxedBitmapBase<N> {
     type Item = u64;
+    fn write_default(alloc: *mut Bitmap<Self>) {
+        let alloc = alloc as *mut Self::Item;
+        (0..=N).for_each(|n| unsafe {
+            alloc.add(n);
+            alloc.write(0);
+        });
+    }
+
     fn bits(&self) -> &[Self::Item] {
         &self.bits
     }
@@ -260,6 +278,15 @@ impl<const N: usize> AtomicBitmapBase<N> {}
 
 impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
     type Item = Comparatomic<AtomicU64>;
+
+    fn write_default(alloc: *mut Bitmap<Self>) {
+        dbg!("yee");
+        let alloc = alloc as *mut Self::Item;
+        (0..=N).for_each(|n| unsafe {
+            alloc.add(n);
+            alloc.write(Comparatomic::new(0));
+        });
+    }
 
     fn bits(&self) -> &[Self::Item] {
         &self.bits
@@ -307,7 +334,7 @@ impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
 
 impl Default for Bitmap<AtomicBitmapBase<4>> {
     fn default() -> Self {
-        Bitmap {
+        Self {
             internal_type: {
                 AtomicBitmapBase {
                     bits: [

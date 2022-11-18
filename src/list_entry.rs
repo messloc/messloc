@@ -13,13 +13,13 @@ pub struct ListEntry {
 }
 
 impl ListEntry {
-    pub fn new(prev: MiniHeapId, next: MiniHeapId) -> Self {
-        ListEntry { prev, next }
+    pub const fn new(prev: MiniHeapId, next: MiniHeapId) -> Self {
+        Self { prev, next }
     }
 
     pub fn add(
         &mut self,
-        list_head: *mut ListEntry,
+        list_head: *mut Self,
         list_id: u32,
         self_id: MiniHeapId,
         mut new: *mut (),
@@ -39,7 +39,7 @@ impl ListEntry {
                 let mut prev_list = unsafe { &mut p.as_mut().unwrap().free_list };
                 prev_list.next = MiniHeapId::HeapPointer(new as *const _ as *mut MiniHeap);
 
-                new.set_free_list(ListEntry::new(MiniHeapId::HeapPointer(*p), self_id));
+                new.set_free_list(Self::new(MiniHeapId::HeapPointer(*p), self_id));
                 self.prev = MiniHeapId::HeapPointer(new as *const _ as *mut MiniHeap);
                 self.next = MiniHeapId::HeapPointer(new as *const _ as *mut MiniHeap);
             }
@@ -47,7 +47,7 @@ impl ListEntry {
         }
     }
 
-    pub fn remove(&mut self, mut list_head: *mut ListEntry) {
+    pub fn remove(&mut self, mut list_head: *mut Self) {
         match (&self.prev, &self.next) {
             (prev @ &MiniHeapId::HeapPointer(p), next @ MiniHeapId::HeapPointer(q)) => unsafe {
                 addr_of_mut!((*p).free_list.next).write(MiniHeapId::HeapPointer(p));

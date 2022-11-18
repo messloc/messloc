@@ -71,12 +71,12 @@ impl MiniHeap {
         ));
     }
 
-    pub fn with_object(span: Span, object_count: usize, object_size: usize) -> MiniHeap {
+    pub fn with_object(span: Span, object_count: usize, object_size: usize) -> Self {
         todo!()
     }
 
     #[allow(clippy::unused_self)]
-    pub fn get_mini_heap(&self, id: &MiniHeapId) -> *mut MiniHeap {
+    pub fn get_mini_heap(&self, id: &MiniHeapId) -> *mut Self {
         if let MiniHeapId::HeapPointer(mh) = id {
             builtin_prefetch(id as *const _ as *mut ());
             *mh
@@ -124,7 +124,7 @@ impl MiniHeap {
         }
     }
 
-    pub fn consume(&mut self, src: &MiniHeap) {
+    pub fn consume(&mut self, src: &Self) {
         // TODO: consider taking an owned miniheap
         assert!(src != self);
         assert_eq!(self.object_size, src.object_size);
@@ -147,10 +147,10 @@ impl MiniHeap {
         self.track_meshed_span(src);
     }
 
-    pub fn track_meshed_span(&mut self, src: &MiniHeap) {
+    pub fn track_meshed_span(&mut self, src: &Self) {
         match self.next_mashed {
             MiniHeapId::Head => {
-                self.next_mashed = MiniHeapId::HeapPointer(&src as *const _ as *mut MiniHeap);
+                self.next_mashed = MiniHeapId::HeapPointer(&src as *const _ as *mut Self);
             }
             MiniHeapId::HeapPointer(mh) => {
                 let heap = unsafe { mh.as_mut().unwrap() };
@@ -259,7 +259,7 @@ impl MiniHeap {
 }
 impl Heap for MiniHeap {
     type PointerType = *mut ();
-    type MallocType = *mut ();
+    type MallocType = ();
 
     unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
         todo!()
@@ -302,16 +302,16 @@ pub enum FreeListId {
 impl FreeListId {
     pub fn from_integer(id: u32) -> Self {
         match id {
-            0 => FreeListId::Full,
-            1 => FreeListId::Partial,
-            2 => FreeListId::Empty,
-            3 => FreeListId::Attached,
-            4 => FreeListId::Max,
+            0 => Self::Full,
+            1 => Self::Partial,
+            2 => Self::Empty,
+            3 => Self::Attached,
+            4 => Self::Max,
             _ => unreachable!(),
         }
     }
 }
-fn class_index(size: usize) -> usize {
+const fn class_index(size: usize) -> usize {
     if size <= MAX_SMALL_SIZE {
         (size + 7) >> 3
     } else {
@@ -444,19 +444,19 @@ pub enum MiniHeapId {
 }
 
 impl MiniHeapId {
-    pub fn new(ptr: *mut MiniHeap) -> Self {
-        MiniHeapId::HeapPointer(ptr)
+    pub const fn new(ptr: *mut MiniHeap) -> Self {
+        Self::HeapPointer(ptr)
     }
 
     pub unsafe fn get(&self, index: usize) -> *mut () {
         match self {
-            MiniHeapId::HeapPointer(mh) => mh.add(index) as *mut (),
+            Self::HeapPointer(mh) => mh.add(index) as *mut (),
             _ => unreachable!(),
         }
     }
 
-    pub fn is_head(&self) -> bool {
-        matches!(self, MiniHeapId::Head)
+    pub const fn is_head(&self) -> bool {
+        matches!(self, Self::Head)
     }
 }
 

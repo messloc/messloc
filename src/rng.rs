@@ -12,8 +12,8 @@ pub struct Rng {
 }
 
 impl Rng {
-    pub fn init() -> Rng {
-        Rng {
+    pub fn init() -> Self {
+        Self {
             rng: Arc::new(Mutex::new(Xoshiro256PlusPlus::seed_from_u64(0))),
         }
     }

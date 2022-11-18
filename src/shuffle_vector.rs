@@ -186,8 +186,8 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn new(mh_offset: usize, bit_offset: usize) -> Self {
-        Entry {
+    pub const fn new(mh_offset: usize, bit_offset: usize) -> Self {
+        Self {
             mh_offset,
             bit_offset,
         }

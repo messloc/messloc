@@ -24,7 +24,7 @@ use crate::{
     list_entry::ListEntry,
     meshable_arena::MeshableArena,
     mini_heap::{MiniHeap, MiniHeapId},
-    one_way_mmap_heap::Heap,
+    one_way_mmap_heap::{Heap, OneWayMmapHeap},
     rng::Rng,
     splits::MergeSetWithSplits,
     utils::{
@@ -125,8 +125,8 @@ pub struct Messloc(pub Arc<Mutex<FastWalkTime>>);
 
 impl Messloc {
     #[must_use]
-    pub fn init() -> Messloc {
-        Messloc(Arc::new(Mutex::new(FastWalkTime {
+    pub fn init() -> Self {
+        Self(Arc::new(Mutex::new(FastWalkTime {
             pid: 0,
             signal_fd: 0,
             global_heap: GlobalHeap::init(),
@@ -146,6 +146,7 @@ impl Messloc {
     #[allow(clippy::missing_safety_doc)]
     #[must_use]
     pub unsafe fn allocate(&self, layout: Layout) -> *mut u8 {
+        dbg!("yee");
         let mut heap = &mut self.0.lock().unwrap().global_heap;
         heap.malloc(layout.size()) as *mut u8
     }
@@ -172,19 +173,38 @@ pub struct StartThreadArgs {
 }
 
 #[allow(clippy::type_complexity)]
-pub struct FreeList(pub [[(ListEntry, Comparatomic<AtomicU64>); 1]; 3]);
+pub struct FreeList(pub [[(ListEntry, Comparatomic<AtomicU64>); NUM_BINS]; 3]);
 
 unsafe impl Send for FreeList {}
 
 impl FreeList {
     pub fn init() -> Self {
         let free_list = std::array::from_fn(|_| {
-            [(
-                ListEntry::new(MiniHeapId::None, MiniHeapId::None),
-                Comparatomic::new(0u64),
-            )]
+            std::array::from_fn(|_| {
+                (
+                    ListEntry::new(MiniHeapId::None, MiniHeapId::None),
+                    Comparatomic::new(0u64),
+                )
+            })
         });
 
         FreeList(free_list)
+    }
+
+    pub fn alloc_new() -> *mut Self {
+        let alloc = unsafe {
+            OneWayMmapHeap.malloc(std::mem::size_of::<Self>())
+                as *mut (ListEntry, Comparatomic<AtomicU64>)
+        };
+
+        (0..NUM_BINS * 3).for_each(|bin| unsafe {
+            let addr = alloc.add(bin) as *mut (ListEntry, Comparatomic<AtomicU64>);
+            addr.write((
+                ListEntry::new(MiniHeapId::None, MiniHeapId::None),
+                Comparatomic::new(0),
+            ));
+        });
+
+        alloc.cast()
     }
 }

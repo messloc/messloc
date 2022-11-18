@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::process::id;
 use std::ptr::null_mut;
 
-const TMP_DIR: &str = "target/debug/";
+const TMP_DIR: &str = "/tmp/";
 
 pub fn open_shm_span_file(size: usize) -> i32 {
     let span_dir = {
