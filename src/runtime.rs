@@ -1,25 +1,23 @@
-use std::{
+use core::{
     alloc::Layout,
     cell::{Ref, RefCell, RefMut},
     ffi::c_int,
     mem::{size_of, MaybeUninit},
     ops::Deref,
-    process::id,
     ptr::{addr_of_mut, null, NonNull},
-    rc::Rc,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, PoisonError,
-    },
-    thread::{current, yield_now},
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
+
+use alloc::rc::Rc;
+use spin::{Mutex, MutexGuard};
 
 use libc::{pthread_attr_t, pthread_t, sigset_t, SIG_BLOCK};
 
 use crate::{
     cheap_heap::CheapHeap,
     comparatomic::Comparatomic,
+    fake_std::Arc,
     global_heap::GlobalHeap,
     list_entry::ListEntry,
     meshable_arena::MeshableArena,
@@ -46,13 +44,6 @@ impl FastWalkTime {
         //
         self.create_signal_fd();
         self.install_segfault_handler();
-        self.init_max_map_count();
-
-        let background_thread = std::env::var("MESH_BACKGROUND_THREAD").unwrap();
-
-        if let Ok(1u8) = background_thread.parse() {
-            self.start_background_thread();
-        }
     }
 
     pub fn create_signal_fd(&mut self) {
@@ -93,32 +84,6 @@ impl FastWalkTime {
         //TODO: add signal mutex if needed
         sig_proc_mask(SIG_BLOCK, mask, null::<sigset_t>() as *mut _).unwrap();
     }
-
-    pub fn init_max_map_count(&self) {
-        // TODO: this should run only on linux
-
-        let buf = std::fs::read_to_string("/proc/sys/vm/max_map_count").unwrap();
-        let map_count: usize = buf.parse().unwrap();
-    }
-
-    pub fn start_background_thread(&self) {
-        let signal_fd = self.signal_fd;
-        std::thread::spawn(move || {
-            //TODO:: linux-gate this
-            let buf = unsafe { signalfd_siginfo() };
-            unsafe {
-                read(
-                    signal_fd,
-                    &buf as *const _ as *mut libc::c_void,
-                    std::mem::size_of::<libc::signalfd_siginfo>(),
-                )
-                .unwrap();
-            }
-
-            //TODO:: add a retry check somehow and a counter if needed
-            yield_now();
-        });
-    }
 }
 
 pub struct Messloc(pub Arc<Mutex<FastWalkTime>>);
@@ -133,11 +98,6 @@ impl Messloc {
         })))
     }
 
-    #[must_use]
-    pub fn share(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-
     pub fn update_pid(&mut self) {
         todo!();
         // self.pid = id();
@@ -146,14 +106,13 @@ impl Messloc {
     #[allow(clippy::missing_safety_doc)]
     #[must_use]
     pub unsafe fn allocate(&self, layout: Layout) -> *mut u8 {
-        dbg!("yee");
-        let mut heap = &mut self.0.lock().unwrap().global_heap;
+        let mut heap = &mut self.0.lock().global_heap;
         heap.malloc(layout.size()) as *mut u8
     }
 
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn deallocate(&self, ptr: *mut u8, layout: Layout) {
-        self.0.lock().unwrap().global_heap.free(ptr as *mut ());
+        self.0.lock().global_heap.free(ptr as *mut ());
     }
 }
 
@@ -179,8 +138,8 @@ unsafe impl Send for FreeList {}
 
 impl FreeList {
     pub fn init() -> Self {
-        let free_list = std::array::from_fn(|_| {
-            std::array::from_fn(|_| {
+        let free_list = core::array::from_fn(|_| {
+            core::array::from_fn(|_| {
                 (
                     ListEntry::new(MiniHeapId::None, MiniHeapId::None),
                     Comparatomic::new(0u64),
@@ -193,7 +152,7 @@ impl FreeList {
 
     pub fn alloc_new() -> *mut Self {
         let alloc = unsafe {
-            OneWayMmapHeap.malloc(std::mem::size_of::<Self>())
+            OneWayMmapHeap.malloc(core::mem::size_of::<Self>())
                 as *mut (ListEntry, Comparatomic<AtomicU64>)
         };
 

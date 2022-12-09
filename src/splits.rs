@@ -3,12 +3,12 @@ use crate::mini_heap::{MiniHeap, MiniHeapId};
 use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 use crate::utils;
 use crate::{MAX_MERGE_SETS, MAX_SPLIT_LIST_SIZE, NUM_BINS};
+use alloc::rc::Rc;
+use core::cell::RefCell;
+use core::mem::MaybeUninit;
+use core::ptr::null_mut;
 use libc::c_void;
 use once_cell::race::OnceNonZeroUsize;
-use std::cell::RefCell;
-use std::mem::MaybeUninit;
-use std::ptr::null_mut;
-use std::rc::Rc;
 
 pub struct MergeElement {
     pub mini_heap: *mut MiniHeap,
@@ -27,14 +27,14 @@ pub enum SplitType {
 impl<const N: usize> MergeSetWithSplits<N> {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
-        Self(std::array::from_fn(|_| MergeElement {
+        Self(core::array::from_fn(|_| MergeElement {
             mini_heap: null_mut(),
             direction: SplitType::Left,
         }))
     }
 
     pub fn alloc_new() -> *mut () {
-        let size = std::mem::size_of::<MergeElement>() * N;
+        let size = core::mem::size_of::<MergeElement>() * N;
         let alloc = unsafe { OneWayMmapHeap.malloc(size) as *mut MergeElement };
         (0..N).for_each(|split| unsafe {
             let addr = alloc.add(split) as *mut MergeElement;

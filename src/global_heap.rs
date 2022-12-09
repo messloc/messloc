@@ -1,19 +1,16 @@
-use std::{
+use core::{
     assert_matches::assert_matches,
     cell::RefCell,
     cell::{Ref, RefMut},
     mem::{size_of, MaybeUninit},
     ops::{Deref, DerefMut},
     ptr::{addr_of_mut, null, null_mut},
-    rc::Rc,
-    sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
-        Arc, Mutex, MutexGuard, PoisonError,
-    },
-    time::{Duration, SystemTime},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+    time::Duration,
 };
 
 use arrayvec::ArrayVec;
+use spin::{Mutex, MutexGuard};
 
 use crate::{
     bitmap::BitmapBase,
@@ -26,8 +23,8 @@ use crate::{
     mini_heap::{self, size_class, FreeListId, MiniHeap, MiniHeapId},
     one_way_mmap_heap::{Heap, OneWayMmapHeap},
     rng::Rng,
-    runtime::{self, FastWalkTime, FreeList, Messloc},
-    shuffle_vector::{self, ShuffleVector},
+    runtime::{FastWalkTime, FreeList, Messloc},
+    shuffle_vector::ShuffleVector,
     span::Span,
     splits::{MergeElement, MergeSetWithSplits, SplitType},
     ARENA_SIZE, BINNED_TRACKER_MAX_EMPTY, MAX_MERGE_SETS, MAX_MESHES, MAX_MESHES_PER_ITERATION,
@@ -45,7 +42,7 @@ pub struct GlobalHeapStats {
 }
 
 pub struct GlobalHeap {
-    pub arena: Mutex<MeshableArena>,
+    pub arena: MeshableArena,
     pub shuffle_vector: *mut (),
     pub free_lists: *mut FreeList,
     pub merge_set: *mut (),
@@ -67,25 +64,25 @@ const fn page_count(bytes: usize) -> usize {
 
 impl GlobalHeap {
     pub fn init() -> Self {
-        //let mesh_period = std::env::var("MESH_PERIOD_MS").unwrap();
+        //let mesh_period = core::env::var("MESH_PERIOD_MS").unwrap();
         //let period = mesh_period.parse().unwrap();
         let period = 0;
 
         let alloc = unsafe {
-            OneWayMmapHeap.malloc(std::mem::size_of::<
+            OneWayMmapHeap.malloc(core::mem::size_of::<
                 [ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS],
             >()) as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>
         };
+
         (0..NUM_BINS).for_each(|bin| unsafe {
-            let element = alloc.add(bin) as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>;
+            let element = alloc.add(bin);
             element.write(ShuffleVector::new());
         });
 
         let arena = MeshableArena::init();
         let merge_set = MergeSetWithSplits::<MAX_SPLIT_LIST_SIZE>::alloc_new();
-
         Self {
-            arena: Mutex::new(arena),
+            arena,
             shuffle_vector: alloc as *mut (),
             free_lists: FreeList::alloc_new(),
             merge_set,
@@ -113,8 +110,18 @@ impl GlobalHeap {
             if shuffle_vector.is_exhausted_and_no_refill() {
                 self.small_alloc_global_refill(size_class);
             }
-
-            shuffle_vector.malloc() as *mut ()
+            let allocator = shuffle_vector.malloc() as *mut ();
+            if allocator.is_null() {
+                let alloc = unsafe { OneWayMmapHeap.malloc(bytes) as *mut () };
+                //TODO:: create the miniheap :P
+                shuffle_vector.insert(alloc.cast());
+                if self.arena.arena_begin.is_null() {
+                    self.arena.arena_begin = alloc;
+                }
+                alloc
+            } else {
+                allocator
+            }
         } else {
             self.alloc_page_aligned(1, page_count(bytes))
         }
@@ -163,23 +170,15 @@ impl GlobalHeap {
             );
             let remaining = mini_heap.in_use_count() - 1;
             let was_set = mini_heap.clear_if_not_free(offset);
-            let ptr = unsafe {
-                self.arena
-                    .lock()
-                    .unwrap()
-                    .arena_begin
-                    .cast::<MiniHeap>()
-                    .add(offset) as *mut ()
-            };
+            let ptr = unsafe { self.arena.arena_begin.cast::<MiniHeap>().add(offset) as *mut () };
 
             let mh = {
-                let arena = self.arena.lock().unwrap();
                 let offset = unsafe {
-                    usize::try_from(ptr.offset_from(arena.arena_begin as *mut ())).unwrap()
+                    usize::try_from(ptr.offset_from(self.arena.arena_begin as *mut ())).unwrap()
                 };
                 unsafe {
                     if let MiniHeapId::HeapPointer(ptr) =
-                        *arena.mh_allocator.cast::<MiniHeapId>().add(offset)
+                        *self.arena.mh_allocator.cast::<MiniHeapId>().add(offset)
                     {
                         ptr.as_mut().unwrap()
                     } else {
@@ -188,7 +187,7 @@ impl GlobalHeap {
                 }
             };
 
-            if epoch.0.load(Ordering::AcqRel) % 2 == 1 || !self.mesh_epoch.is_same(&epoch) {
+            if epoch.0.load(Ordering::Acquire) % 2 == 1 || !self.mesh_epoch.is_same(&epoch) {
                 if self.is_related(ptr.cast(), mini_heap as *const _ as *mut ()) && was_set {
                     let size_class = mh.size_class();
                     assert_eq!(mini_heap.size_class(), mh.size_class());
@@ -238,10 +237,13 @@ impl GlobalHeap {
     ) -> *mut MiniHeap {
         epoch.set(self.mesh_epoch.current(), Ordering::Acquire);
 
-        let arena = self.arena.lock().unwrap();
-        let offset = ptr.offset_from(arena.arena_begin as *mut ()) as usize;
-        if let MiniHeapId::HeapPointer(ptr) =
-            arena.mh_allocator.cast::<MiniHeapId>().add(offset).read()
+        let offset = ptr.offset_from(self.arena.arena_begin as *mut ()) as usize;
+        if let MiniHeapId::HeapPointer(ptr) = self
+            .arena
+            .mh_allocator
+            .cast::<MiniHeapId>()
+            .add(offset)
+            .read()
         {
             ptr
         } else {
@@ -252,7 +254,7 @@ impl GlobalHeap {
     #[allow(clippy::needless_for_each)]
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn free_mini_heap_locked(&mut self, mini_heap: *mut (), untrack: bool) {
-        let addr = self.arena.lock().unwrap().arena_begin;
+        let addr = self.arena.arena_begin;
 
         let mut to_free: [MaybeUninit<*mut MiniHeap>; MAX_MESHES] = MaybeUninit::uninit_array();
 
@@ -267,7 +269,7 @@ impl GlobalHeap {
 
         let to_free = unsafe { MaybeUninit::array_assume_init(to_free) };
 
-        let begin = self.arena.lock().unwrap().arena_begin;
+        let begin = self.arena.arena_begin;
 
         to_free.iter().for_each(|heap| {
             let mh = unsafe { heap.as_mut().unwrap() };
@@ -284,8 +286,6 @@ impl GlobalHeap {
             }
             let allocator = self
                 .arena
-                .lock()
-                .unwrap()
                 .mh_allocator
                 .cast::<CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>>()
                 .as_mut()
@@ -317,7 +317,7 @@ impl GlobalHeap {
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn free(&mut self, ptr: *mut ()) {
         let mut start_epoch = Epoch::default();
-        let offset = unsafe { ptr.offset_from(self.arena.lock().unwrap().arena_begin as *mut ()) };
+        let offset = unsafe { ptr.offset_from(self.arena.arena_begin as *mut ()) };
 
         self.free_for(
             ptr as *mut MiniHeap,
@@ -333,11 +333,9 @@ impl GlobalHeap {
     pub fn mesh_all_sizes_mesh_locked(&mut self) {
         // TODO:: add assert checks if needed
 
-        self.arena.lock().unwrap().scavenge(true);
+        self.arena.scavenge(true);
 
-        if self.last_mesh_effective.load(Ordering::Acquire)
-            && self.arena.lock().unwrap().above_mesh_threshold()
-        {
+        if self.last_mesh_effective.load(Ordering::Acquire) && self.arena.above_mesh_threshold() {
             self.flush_all_bins();
 
             let total_mesh_count = (0..NUM_BINS)
@@ -360,7 +358,7 @@ impl GlobalHeap {
                 .mesh_count
                 .fetch_add(total_mesh_count, Ordering::Acquire);
 
-            self.arena.lock().unwrap().scavenge(true);
+            self.arena.scavenge(true);
         }
     }
 
@@ -374,7 +372,10 @@ impl GlobalHeap {
                 .cast::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>()
                 .as_mut()
                 .unwrap()
-                .mini_heaps;
+                .mini_heaps
+                .cast::<[*mut MiniHeap; MAX_SHUFFLE_VECTOR_LENGTH]>()
+                .as_mut()
+                .unwrap();
             mini_heaps.iter().for_each(|mini_heap| {
                 let mini_heap = unsafe { mini_heap.as_mut().unwrap() };
                 mini_heap.unset_attached();
@@ -385,12 +386,13 @@ impl GlobalHeap {
 
         let (mut mini_heaps, mut bytes_free) = self.select_for_reuse(size_class, current);
 
-        if bytes_free < MINI_HEAP_REFILL_GOAL_SIZE && !mini_heaps.len() == mini_heaps.capacity() {
+        if bytes_free < MINI_HEAP_REFILL_GOAL_SIZE && !mini_heaps.len() == MAX_SPLIT_LIST_SIZE {
             let object_count = MIN_STRING_LEN.max(PAGE_SIZE / object_size);
             let page_count = page_count(object_size * object_count);
+            let mut count = 0;
 
             while bytes_free < MINI_HEAP_REFILL_GOAL_SIZE
-                && !mini_heaps.len() == mini_heaps.capacity()
+                && !mini_heaps.len() == MAX_SPLIT_LIST_SIZE
             {
                 let mut mh = self.alloc_mini_heap_locked(page_count, object_count, object_size, 1);
                 let mut heap = unsafe { mh.as_mut().unwrap() };
@@ -398,7 +400,8 @@ impl GlobalHeap {
 
                 heap.set_attached(current, &heap.free_list as *const _ as *mut ListEntry);
                 assert!(heap.is_attached() && heap.current() == current);
-                mini_heaps.push(mh);
+                mini_heaps[count] = mh;
+                count += 1;
                 bytes_free += heap.bytes_free();
             }
         }
@@ -424,13 +427,12 @@ impl GlobalHeap {
     pub fn flush_bin_locked(&mut self, size_class: usize) {
         let free_list = unsafe { &self.free_lists.as_mut().unwrap() };
         let mut next = &free_list.0[0][size_class].0.next;
-        let mut to_be_locked = vec![];
 
         while let MiniHeapId::HeapPointer(next_id) = next {
             let mut mh = unsafe { next_id.as_mut().unwrap() };
             next = unsafe { &mh.free_list.next };
 
-            to_be_locked.push(next_id);
+            unsafe { self.free_mini_heap_locked(next_id as *const _ as *mut (), true) };
             free_list.0[0][size_class].1.store(1, Ordering::Acquire);
         }
 
@@ -439,10 +441,6 @@ impl GlobalHeap {
 
             assert_matches!(free_list.0[0][size_class].0.prev, MiniHeapId::Head);
         }
-
-        to_be_locked.iter().for_each(|mh| {
-            unsafe { self.free_mini_heap_locked(mh as *const _ as *mut (), true) };
-        });
     }
 
     pub fn mesh_size_class_locked(&mut self, size_class: usize) -> usize {
@@ -476,7 +474,7 @@ impl GlobalHeap {
                 let src_count = src_obj.mesh_count();
                 if dst_count + src_count <= MAX_MESHES {
                     if dst_count < src_count {
-                        std::mem::swap(&mut dst, &mut src);
+                        core::mem::swap(&mut dst, &mut src);
                     }
 
                     unsafe {
@@ -506,13 +504,17 @@ impl GlobalHeap {
         mesh_count.unwrap()
     }
 
-    pub fn select_for_reuse(&self, size_class: usize, current: u64) -> (Vec<*mut MiniHeap>, usize) {
+    pub fn select_for_reuse(
+        &self,
+        size_class: usize,
+        current: u64,
+    ) -> ([*mut MiniHeap; MAX_SPLIT_LIST_SIZE], usize) {
         let free_list = unsafe { self.free_lists.as_mut().unwrap() };
         let (mut mini_heaps, mut bytes_free) =
             self.fill_from_list(current, &free_list.0[2][size_class]);
         if bytes_free < MINI_HEAP_REFILL_GOAL_SIZE {
-            let (mh, bytes) = self.fill_from_list(current, &free_list.0[0][size_class]);
-            mini_heaps.extend_from_slice(&mh);
+            // TODO:: check if we need to append to previous list or not
+            let (mini_heaps, bytes) = self.fill_from_list(current, &free_list.0[0][size_class]);
             bytes_free += bytes;
         }
         (mini_heaps, bytes_free)
@@ -522,7 +524,7 @@ impl GlobalHeap {
         &self,
         current: u64,
         free_list: &(ListEntry, Comparatomic<AtomicU64>),
-    ) -> (Vec<*mut MiniHeap>, usize) {
+    ) -> ([*mut MiniHeap; MAX_SPLIT_LIST_SIZE], usize) {
         let mut next = &free_list.0.next;
         let mut next_id = if let MiniHeapId::HeapPointer(p) = next {
             p
@@ -531,7 +533,7 @@ impl GlobalHeap {
         };
         let mut bytes_free = 0;
 
-        let mut mini_heaps = vec![];
+        let mut mini_heaps = core::array::from_fn(|_| null_mut());
         let mut count = 0;
         while let MiniHeapId::HeapPointer(mh) = next && bytes_free < MINI_HEAP_REFILL_GOAL_SIZE {
             let mut heap = unsafe {
@@ -555,7 +557,7 @@ impl GlobalHeap {
             .unwrap();
 
             heap.set_attached(current, fl as *const _ as *mut ListEntry);
-            mini_heaps.push(mh as *const _ as *mut MiniHeap);
+            mini_heaps[count] = (mh as *const _ as *mut MiniHeap);
             count += 1;
             free_list.1.inner().fetch_sub(1, Ordering::AcqRel);
         }
@@ -567,8 +569,11 @@ impl GlobalHeap {
         let free_lists = unsafe { &self.free_lists.as_mut().unwrap() };
         let mh = &free_lists.0[0].get(size_class).unwrap().0;
         let (left, right) = self.half_split(size_class);
-        let mut left_set = vec![];
-        let mut right_set = vec![];
+        let (mut lc, mut rc) = (0usize, 0usize);
+        let mut left_set: [*mut MiniHeap; MAX_SPLIT_LIST_SIZE] =
+            core::array::from_fn(|_| null_mut());
+        let mut right_set: [*mut MiniHeap; MAX_SPLIT_LIST_SIZE] =
+            core::array::from_fn(|_| null_mut());
         unsafe {
             self.merge_set
                 .cast::<MergeSetWithSplits<MAX_SPLIT_LIST_SIZE>>()
@@ -593,10 +598,12 @@ impl GlobalHeap {
             } = merge;
             match direction {
                 SplitType::Left => {
-                    left_set.push(*mini_heap);
+                    left_set[lc] = *mini_heap;
+                    lc += 1;
                 }
                 SplitType::Right => {
-                    right_set.push(*mini_heap);
+                    right_set[rc] = *mini_heap;
+                    rc += 1;
                 }
                 _ => {}
             }
@@ -742,7 +749,7 @@ impl GlobalHeap {
             .get(size_class)
             .unwrap()
             .1
-            .load(Ordering::Release);
+            .load(Ordering::Acquire);
 
         (empties > BINNED_TRACKER_MAX_EMPTY).then_some(())
     }
@@ -756,8 +763,6 @@ impl GlobalHeap {
         crate::for_each_meshed!(src {
             let src_span = src.span_start as *mut libc::c_void;
             self.arena
-                .lock()
-                .unwrap()
                 .begin_mesh(src_span, dst.span_size());
             false
         });
@@ -780,15 +785,14 @@ impl GlobalHeap {
     }
 
     pub fn alloc_mini_heap_locked(
-        &self,
+        &mut self,
         page_count: usize,
         object_count: usize,
         object_size: usize,
         alignment: usize,
     ) -> *mut MiniHeap {
-        let mut arena = self.arena.lock().unwrap();
         let buffer = unsafe {
-            arena
+            self.arena
                 .mh_allocator
                 .cast::<CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>>()
                 .as_mut()
@@ -796,13 +800,12 @@ impl GlobalHeap {
                 .alloc()
         } as *mut MiniHeap;
         let span = Span::default();
-        let span_begin = arena.page_alloc(page_count, alignment);
+        let span_begin = self.arena.page_alloc(page_count, alignment);
         let mut mh = MiniHeap::with_object(span.clone(), object_count, object_size);
-        let mini_heap_id =
-            unsafe { buffer.offset_from(self.arena.lock().unwrap().arena_begin as *const _) };
+        let mini_heap_id = unsafe { buffer.offset_from(self.arena.arena_begin as *const _) };
 
         (0..span.length).for_each(|i| unsafe {
-            arena
+            self.arena
                 .mh_allocator
                 .cast::<MiniHeapId>()
                 .add(span.offset + i)
@@ -828,9 +831,8 @@ impl GlobalHeap {
     ) -> *mut MiniHeap {
         debug_assert!(page_count > 0, "should allocate at least 1 page");
 
-        let mut arena = self.arena.lock().unwrap();
         let buf = unsafe {
-            arena
+            self.arena
                 .mh_allocator
                 .cast::<CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>>()
                 .as_mut()
@@ -839,7 +841,7 @@ impl GlobalHeap {
         };
         debug_assert_ne!(buf, null_mut());
         // allocate out of the arena
-        let (span, span_begin) = arena.page_alloc(page_count, page_align);
+        let (span, span_begin) = self.arena.page_alloc(page_count, page_align);
         debug_assert_ne!(span_begin, null_mut(), "arena allocation failed");
         debug_assert_eq!(
             span_begin
@@ -850,10 +852,10 @@ impl GlobalHeap {
         );
         debug_assert!(size_of::<MiniHeap>() <= 64);
         let mh = buf as *mut MiniHeap;
-        unsafe { MiniHeap::new_inplace(mh, span.clone(), object_count, object_size) }
+        unsafe { MiniHeap::new_inplace(mh, span.clone(), object_count, object_size) };
 
         (0..span.length).for_each(|i| unsafe {
-            arena
+            self.arena
                 .mh_allocator
                 .cast::<MiniHeapId>()
                 .add(span.offset + i)

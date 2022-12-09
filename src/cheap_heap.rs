@@ -7,10 +7,10 @@ use crate::{
     PAGE_SIZE,
 };
 
-use std::marker::PhantomData;
-use std::mem::MaybeUninit;
-use std::sync::atomic::Ordering;
-use std::{mem::size_of, ptr::null_mut};
+use core::marker::PhantomData;
+use core::mem::MaybeUninit;
+use core::sync::atomic::Ordering;
+use core::{mem::size_of, ptr::null_mut};
 
 pub struct CheapHeap<const ALLOC_SIZE: usize, const MAX_COUNT: usize> {
     freelist: *mut (), // [*mut [u8; ALLOC_SIZE]; MAX_COUNT]
@@ -69,6 +69,7 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_S
     }
 
     unsafe fn malloc(&mut self, size: usize) -> *mut Self::MallocType {
+        todo!();
         let addr = OneWayMmapHeap.malloc(size) as *mut Self;
         let page_data = OneWayMmapHeap.malloc(ARENA_SIZE / PAGE_SIZE) as *mut Self::PointerType;
 
@@ -79,7 +80,7 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_S
                 let heap_addr = addr.add(page);
                 let page_addr = page_data.add(index);
                 let heap =
-                    OneWayMmapHeap.malloc(std::mem::size_of::<MiniHeapId>()) as *mut MiniHeapId;
+                    OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeapId>()) as *mut MiniHeapId;
                 heap.write(MiniHeapId::HeapPointer(null_mut()));
                 page_addr.copy_from(heap, 1);
             });
@@ -93,7 +94,7 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_S
 
     unsafe fn free(&mut self, ptr: *mut ()) {
         debug_assert_eq!(
-            ptr.align_offset(std::mem::align_of::<[u8; ALLOC_SIZE]>()),
+            ptr.align_offset(core::mem::align_of::<[u8; ALLOC_SIZE]>()),
             0,
             "ptr must be aligned to our alloc size"
         );

@@ -2,12 +2,12 @@ use crate::comparatomic::{Atomic, Comparatomic};
 use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 use crate::span::Span;
 use crate::utils::{ffsll, popcountl, stlog};
-use std::cell::Ref;
-use std::ops::BitOrAssign;
-use std::sync::atomic::{AtomicU64, Ordering};
+use core::cell::Ref;
+use core::ops::BitOrAssign;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_BIT_COUNT: u64 = u64::MAX;
-const BYTE_SIZE: usize = std::mem::size_of::<usize>();
+const BYTE_SIZE: usize = core::mem::size_of::<usize>();
 const WORD_BIT_SHIFT: usize = stlog(BYTE_SIZE * 8);
 
 const fn representation_size(bit_count: usize) -> usize {
@@ -94,7 +94,7 @@ where
     T: BitmapBase + PartialEq,
 {
     pub fn alloc_new() -> *mut Self {
-        let size = std::mem::size_of::<Self>();
+        let size = core::mem::size_of::<Self>();
         let alloc = unsafe { OneWayMmapHeap.malloc(size) as *mut Self };
         T::write_default(alloc);
         alloc
@@ -280,7 +280,6 @@ impl<const N: usize> BitmapBase for AtomicBitmapBase<N> {
     type Item = Comparatomic<AtomicU64>;
 
     fn write_default(alloc: *mut Bitmap<Self>) {
-        dbg!("yee");
         let alloc = alloc as *mut Self::Item;
         (0..=N).for_each(|n| unsafe {
             alloc.add(n);

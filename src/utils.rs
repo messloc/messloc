@@ -1,14 +1,16 @@
+use core::ffi::c_int;
+use core::mem::MaybeUninit;
+use core::ptr::addr_of_mut;
 use libc::{
-    c_char, c_void, pthread_attr_t, pthread_t, signalfd_siginfo, sigset_t, FALLOC_FL_KEEP_SIZE,
-    FALLOC_FL_PUNCH_HOLE, F_SETFD, MADV_DONTNEED, MAP_FIXED, MAP_SHARED, PROT_READ, PROT_WRITE,
-    SIGRTMIN,
+    c_char, c_void, pthread_attr_t, pthread_t, signalfd_siginfo, sigset_t, size_t,
+    FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, F_SETFD, MADV_DONTNEED, MAP_FIXED, MAP_SHARED,
+    PROT_READ, PROT_WRITE, SIGRTMIN,
 };
-use std::ffi::c_int;
-use std::io::{Error, Result};
-use std::mem::MaybeUninit;
-use std::os::unix::prelude::OsStrExt;
-use std::path::{Path, PathBuf};
-use std::ptr::addr_of_mut;
+
+use std::io::Error;
+
+// temporary result type till no_std shenanigans are fixed
+pub type Result<T> = core::result::Result<T, std::io::Error>;
 
 pub fn sigdump() -> i32 {
     libc::SIGRTMIN() + 8
@@ -26,9 +28,10 @@ pub unsafe fn mprotect_write(addr: *mut c_void, size: usize) -> Result<()> {
     OutputWrapper(libc::mprotect(addr, size, PROT_READ | PROT_WRITE)).into()
 }
 
+#[allow(clippy::unnecessary_wraps)]
 pub unsafe fn mmap(addr: *mut c_void, fd: i32, size: usize, offset: usize) -> Result<*mut c_void> {
     //TODO: replace it with libc's mmap when issue has been figured out
-    Ok(memmap2::MmapRaw::map_raw(fd)?.as_mut_ptr() as *mut c_void)
+    Ok(memmap2::MmapRaw::map_raw(fd).unwrap().as_mut_ptr() as *mut c_void)
     /*
     let ptr = libc::mmap(
         addr,
@@ -57,6 +60,24 @@ pub unsafe fn mkstemp(file_path: *mut c_char) -> Result<i32> {
     }
 }
 
+pub unsafe fn make_dir_if_not_exists(file_path: *mut c_char) -> Result<Option<()>> {
+    let buf = core::mem::transmute::<_, libc::stat>([0; 36]);
+
+    if libc::stat(file_path, &buf as *const _ as *mut libc::stat) == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(mkdir(file_path)?))
+    }
+}
+
+pub unsafe fn mkdir(file_path: *mut c_char) -> Result<()> {
+    OutputWrapper(libc::mkdir(file_path, libc::S_IRUSR | libc::S_IWUSR)).into()
+}
+
+pub unsafe fn strcat(dest: *mut c_char, src: *const c_char, len: usize) -> *mut c_char {
+    libc::strncat(dest, src, len as size_t)
+}
+
 pub unsafe fn unlink(file_path: *mut c_char) -> Result<()> {
     OutputWrapper(libc::unlink(file_path)).into()
 }
@@ -69,6 +90,10 @@ pub unsafe fn fallocate(fd: i32, offset: usize, len: usize) -> Result<()> {
         i64::try_from(len).unwrap(),
     ))
     .into()
+}
+
+pub fn get_pid() -> u32 {
+    unsafe { libc::getpid() as u32 }
 }
 
 pub unsafe fn ftruncate(fd: i32, len: usize) -> Result<()> {
@@ -93,7 +118,7 @@ pub unsafe fn read(fd: i32, buf: *mut c_void, len: usize) -> Result<()> {
     if res >= 0 {
         Ok(())
     } else {
-        Err(Error::last_os_error())
+        unreachable!()
     }
 }
 
@@ -119,7 +144,7 @@ pub unsafe fn sig_proc_mask(how: c_int, set: *mut sigset_t, old_set: *mut sigset
 
 pub unsafe fn signalfd_siginfo() -> signalfd_siginfo {
     let buffer = [0; 32];
-    std::mem::transmute::<_, signalfd_siginfo>(buffer)
+    core::mem::transmute::<_, signalfd_siginfo>(buffer)
 }
 
 pub unsafe fn new_signal_fd(mask: *mut sigset_t) -> Result<c_int> {
@@ -127,7 +152,7 @@ pub unsafe fn new_signal_fd(mask: *mut sigset_t) -> Result<c_int> {
     if result > 0 {
         Ok(result)
     } else {
-        Err(Error::last_os_error())
+        unreachable!()
     }
 }
 
@@ -138,7 +163,7 @@ pub unsafe fn pthread_create(
     args: *mut (),
 ) -> Result<()> {
     let start_routine =
-        std::mem::transmute::<_, extern "C" fn(*mut c_void) -> *mut c_void>(start_routine);
+        core::mem::transmute::<_, extern "C" fn(*mut c_void) -> *mut c_void>(start_routine);
     OutputWrapper(libc::pthread_create(
         thread as *mut pthread_t,
         attr.as_ptr(),

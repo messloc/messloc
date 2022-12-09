@@ -1,4 +1,4 @@
-use std::mem::MaybeUninit;
+use core::mem::MaybeUninit;
 
 use arrayvec::ArrayVec;
 
@@ -50,7 +50,7 @@ pub struct SpanList<const INNER_COUNT: usize, const SPAN_COUNT: usize>(
 
 impl<const INNER_COUNT: usize, const SPAN_COUNT: usize> SpanList<INNER_COUNT, SPAN_COUNT> {
     pub fn alloc_new() -> *mut Self {
-        let size = std::mem::size_of::<Self>();
+        let size = core::mem::size_of::<Self>();
         let alloc = unsafe { OneWayMmapHeap.malloc(size) as *mut Span };
 
         (0..SPAN_COUNT).for_each(|span| unsafe {
@@ -81,7 +81,7 @@ impl<const INNER_COUNT: usize, const SPAN_COUNT: usize> SpanList<INNER_COUNT, SP
     }
 
     pub fn clear(&mut self) {
-        let _ = std::mem::take(self);
+        let _ = core::mem::take(self);
     }
 
     pub fn for_each_free<F>(&self, mut func: F)
@@ -95,7 +95,7 @@ impl<const INNER_COUNT: usize, const SPAN_COUNT: usize> SpanList<INNER_COUNT, SP
 
 impl<const IC: usize, const SC: usize> Default for SpanList<IC, SC> {
     fn default() -> Self {
-        let list = std::array::from_fn(|_| ArrayVec::default());
+        let list = core::array::from_fn(|_| ArrayVec::default());
 
         Self(list)
     }

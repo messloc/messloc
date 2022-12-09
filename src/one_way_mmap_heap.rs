@@ -1,7 +1,7 @@
-use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-use std::{process::abort, ptr::null_mut};
-
 use crate::PAGE_SIZE;
+use core::{alloc::Allocator, ptr::null_mut, ptr::NonNull};
+use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+use once_cell::race::OnceNonZeroUsize;
 
 pub trait Heap {
     type PointerType;
@@ -32,7 +32,7 @@ impl Heap for OneWayMmapHeap {
 
         if ptr == MAP_FAILED {
             // we probably shouldn't panic in allocators
-            abort()
+            panic!()
         }
 
         // debug_assert_eq!(ptr.align_offset(Self::ALIGNMENT), 0);

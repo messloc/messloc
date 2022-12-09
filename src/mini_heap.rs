@@ -1,18 +1,15 @@
-use std::{
+use core::{
     cell::Ref,
     cell::RefCell,
     marker::PhantomData,
     mem::MaybeUninit,
     ops::DerefMut,
     ptr::{addr_of_mut, copy_nonoverlapping, null, null_mut},
-    rc::Rc,
-    sync::{
-        atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
 };
 
-use lazy_static::__Deref;
+use alloc::rc::Rc;
+
 use libc::c_void;
 
 use crate::{
@@ -135,9 +132,9 @@ impl MiniHeap {
             assert!(!self
                 .bitmap
                 .borrow_mut()
-                .is_set(off.load(Ordering::AcqRel) as usize));
+                .is_set(off.load(Ordering::Acquire) as usize));
 
-            let offset = off.load(Ordering::AcqRel) as usize;
+            let offset = off.load(Ordering::Acquire) as usize;
             unsafe {
                 let src_object = unsafe { src_span.add(offset) };
                 let dst_object = self.malloc_at(offset) as *mut MiniHeap;
@@ -254,7 +251,7 @@ impl MiniHeap {
     }
 
     pub fn set_free_list_id(&self, free_list: FreeListId) {
-        self.flags.set_freelist_id(free_list)
+        self.flags.set_freelist_id(free_list);
     }
 }
 impl Heap for MiniHeap {

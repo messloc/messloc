@@ -1,4 +1,4 @@
-use std::{
+use core::{
     ops::BitAnd,
     sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering},
 };
@@ -37,7 +37,7 @@ where
 }
 
 pub trait Atomic: Sized {
-    type Innermost: PartialEq + std::fmt::Debug + Copy;
+    type Innermost: PartialEq + core::fmt::Debug + Copy;
     fn make(input: Self::Innermost) -> Self;
     fn cas(
         &self,
@@ -217,7 +217,7 @@ impl Atomic for AtomicBool {
 
 impl From<Comparatomic<AtomicU64>> for u64 {
     fn from(x: Comparatomic<AtomicU64>) -> Self {
-        x.load(Ordering::AcqRel)
+        x.load(Ordering::Acquire)
     }
 }
 
@@ -229,6 +229,6 @@ where
     type Output = T::Innermost;
 
     fn bitand(self, rhs: &Comparatomic<T>) -> Self::Output {
-        self.load(Ordering::AcqRel) & rhs.load(Ordering::AcqRel)
+        self.load(Ordering::Acquire) & rhs.load(Ordering::Acquire)
     }
 }

@@ -9,14 +9,14 @@ use crate::{
     ARENA_SIZE, DEFAULT_MAX_MESH_COUNT, DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE,
     SPAN_CLASS_COUNT,
 };
-use std::mem::{size_of, MaybeUninit};
-use std::ptr::addr_of_mut;
-use std::{
-    path::PathBuf,
+use core::mem::{size_of, MaybeUninit};
+use core::ptr::addr_of_mut;
+use core::{
     ptr::null_mut,
     sync::atomic::{AtomicPtr, Ordering},
-    sync::{Arc, Mutex},
 };
+
+use spin::mutex::Mutex;
 
 use crate::{
     utils::{fallocate, madvise, mmap, mprotect_read},
@@ -36,7 +36,6 @@ pub struct MeshableArena {
     pub(crate) mh_allocator: *mut (),
     meshed_bitmap: *mut Bitmap<RelaxedBitmapBase<{ ARENA_SIZE / PAGE_SIZE }>>,
     fork_pipe: [i32; 2],
-    span_dir: PathBuf,
     meshed_page_count_hwm: u64,
     max_mesh_count: usize,
 }
@@ -49,11 +48,8 @@ impl MeshableArena {
         // TODO: check if meshing enabled
         let fd = open_shm_span_file(ARENA_SIZE);
         let mut mh_allocator: CheapHeap<8, { ARENA_SIZE / PAGE_SIZE }> = CheapHeap::new();
-        let arena_begin =
-            unsafe { &mh_allocator.map(ARENA_SIZE, MAP_SHARED, fd) as *const _ as *mut () };
-
         Self {
-            arena_begin,
+            arena_begin: null_mut(),
             fd,
             end: Offset::default(),
             dirty: SpanList::alloc_new(),
@@ -62,7 +58,6 @@ impl MeshableArena {
             mh_allocator: &mh_allocator as *const _ as *mut _,
             meshed_bitmap: Bitmap::alloc_new(),
             fork_pipe: [-1, -1],
-            span_dir: PathBuf::default(),
             meshed_page_count_hwm: 0,
             max_mesh_count: DEFAULT_MAX_MESH_COUNT,
         }

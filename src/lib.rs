@@ -7,37 +7,48 @@
 #![allow(unused)]
 #![allow(clippy::needless_for_each)]
 #![allow(clippy::module_name_repetitions)]
+#![allow(incomplete_features)] // used for unsized locals feature
 #![feature(type_alias_impl_trait)]
 #![feature(let_chains)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(assert_matches)]
 #![feature(once_cell)]
+#![feature(allocator_api)]
+#![feature(slice_ptr_len)]
+#![feature(ptr_metadata)]
+#![feature(set_ptr_value)]
+#![feature(unsized_locals)]
 #![recursion_limit = "256"]
 #![deny(clippy::pedantic)]
-use std::{
-    alloc::{GlobalAlloc, Layout},
+
+extern crate alloc;
+
+use core::{
+    alloc::{AllocError, Allocator, GlobalAlloc, Layout},
     ptr::NonNull,
-    sync::LazyLock,
 };
+
+use once_cell::sync::OnceCell;
 
 pub use crate::runtime::Messloc;
 
 #[cfg(feature = "allocator_api")]
-use std::alloc::{AllocError, Allocator};
+use core::alloc::{AllocError, Allocator};
 
 mod arena_fs;
 mod bitmap;
 mod cheap_heap;
 mod class_array;
 mod comparatomic;
+mod fake_std;
 pub mod global_heap;
-mod internal;
 mod list_entry;
 mod meshable_arena;
 mod mini_heap;
 mod mmap_heap;
 mod one_way_mmap_heap;
+mod panic;
 mod rng;
 mod runtime;
 mod shuffle_vector;
@@ -87,31 +98,30 @@ unsafe impl GlobalAlloc for Messloc {
     }
 }
 
-pub struct MessyLock(pub once_cell::sync::Lazy<Messloc>);
+pub struct MessyLock(pub once_cell::sync::OnceCell<Messloc>);
+
+impl MessyLock {
+    pub fn init_in_place(&self) {
+        OnceCell::set(&self.0, Messloc::init());
+        if OnceCell::get(&self.0).is_none() {
+            todo!();
+        }
+    }
+}
 
 unsafe impl GlobalAlloc for MessyLock {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.0.allocate(layout)
+        if once_cell::sync::OnceCell::get(&self.0).is_none() {
+            self.init_in_place();
+        }
+        OnceCell::get(&self.0).unwrap().allocate(layout)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.0.deallocate(ptr, layout);
-    }
-}
-
-impl MessyLock {
-    pub fn inner(&self) -> &Messloc {
-        &self.0
-    }
-}
-
-#[cfg(feature = "allocator-api")]
-unsafe impl Allocator for Messloc {
-    fn allocate(&self, layout: Layout) -> Result<NonNull<[u8]>, AllocError> {
-        self.allocate(layout).ok_or(AllocError)
-    }
-
-    unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        self.deallocate(ptr, layout)
+        if let Some(lazy) = once_cell::sync::OnceCell::get(&self.0) {
+            lazy.deallocate(ptr, layout);
+        } else {
+            unreachable!()
+        }
     }
 }
