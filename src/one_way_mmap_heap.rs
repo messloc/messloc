@@ -2,6 +2,7 @@ use crate::PAGE_SIZE;
 use core::{alloc::Allocator, ptr::null_mut, ptr::NonNull};
 use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_READ, PROT_WRITE};
 use once_cell::race::OnceNonZeroUsize;
+use std::ptr::slice_from_raw_parts_mut;
 
 pub trait Heap {
     type PointerType;
@@ -9,6 +10,7 @@ pub trait Heap {
     unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int)
         -> Self::PointerType;
     unsafe fn malloc(&mut self, size: usize) -> *mut Self::MallocType;
+    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T; 
     unsafe fn get_size(&mut self, ptr: *mut ()) -> usize;
     unsafe fn free(&mut self, ptr: *mut ());
 }
@@ -42,6 +44,12 @@ impl Heap for OneWayMmapHeap {
 
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
         self.map(size, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1)
+    }
+
+    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T { 
+        let alloc = self.malloc(new) as *mut T; 
+        alloc.copy_from_nonoverlapping(src as *mut T, old);
+        alloc
     }
 
     unsafe fn get_size(&mut self, _: *mut ()) -> usize {

@@ -1,6 +1,8 @@
 use crate::arena_fs::open_shm_span_file;
 use crate::bitmap::{Bitmap, BitmapBase, RelaxedBitmapBase};
 use crate::comparatomic::Comparatomic;
+use crate::{for_each_meshed, NUM_BINS};
+use crate::one_way_mmap_heap::OneWayMmapHeap;
 use crate::span::{Length, Offset, Span, SpanList};
 use crate::{
     cheap_heap::CheapHeap,
@@ -15,7 +17,6 @@ use core::{
     ptr::null_mut,
     sync::atomic::{AtomicPtr, Ordering},
 };
-
 use spin::mutex::Mutex;
 
 use crate::{
@@ -33,9 +34,11 @@ pub struct MeshableArena {
     dirty: *mut SpanList<256, SPAN_CLASS_COUNT>,
     clean: *mut SpanList<256, SPAN_CLASS_COUNT>,
     pub freed_spans: *mut SpanList<256, SPAN_CLASS_COUNT>,
+    pub mini_heaps: *mut *mut (),
     pub(crate) mh_allocator: *mut (),
     meshed_bitmap: *mut Bitmap<RelaxedBitmapBase<{ ARENA_SIZE / PAGE_SIZE }>>,
     fork_pipe: [i32; 2],
+    mini_heap_count: usize,
     meshed_page_count_hwm: u64,
     max_mesh_count: usize,
 }
@@ -48,6 +51,8 @@ impl MeshableArena {
         // TODO: check if meshing enabled
         let fd = open_shm_span_file(ARENA_SIZE);
         let mut mh_allocator: CheapHeap<8, { ARENA_SIZE / PAGE_SIZE }> = CheapHeap::new();
+
+        let heaps = unsafe { OneWayMmapHeap.malloc(16) } as *mut ();
         Self {
             arena_begin: null_mut(),
             fd,
@@ -56,8 +61,10 @@ impl MeshableArena {
             clean: SpanList::alloc_new(),
             freed_spans: SpanList::alloc_new(),
             mh_allocator: &mh_allocator as *const _ as *mut _,
+            mini_heaps: heaps.cast(),
             meshed_bitmap: Bitmap::alloc_new(),
             fork_pipe: [-1, -1],
+            mini_heap_count: 0,
             meshed_page_count_hwm: 0,
             max_mesh_count: DEFAULT_MAX_MESH_COUNT,
         }
@@ -67,17 +74,9 @@ impl MeshableArena {
             return (Span::default(), null_mut());
         }
 
-        debug_assert_ne!(
-            self.arena_begin,
-            null_mut(),
-            "meshable arena must be initialised"
-        );
-
         debug_assert!(page_count > 0);
-        debug_assert!(page_count < Length::MAX);
 
         let span = self.reserve_pages(page_count, page_align);
-
         //     d_assert(isAligned(span, pageAlignment));
         //     d_assert(contains(ptrFromOffset(span.offset)));
         //   #ifndef NDEBUG
@@ -240,6 +239,58 @@ impl MeshableArena {
 
     pub fn set_max_mesh_count(&mut self, max_mesh_count: usize) {
         self.max_mesh_count = max_mesh_count;
+    }
+
+    pub fn insert_mini_heap(&mut self, mini_heap: *mut MiniHeap) {
+        let mini_heaps = core::ptr::slice_from_raw_parts_mut(self.mini_heaps, self.mini_heap_count) as *mut [MiniHeap; NUM_BINS];
+
+        let mini_heaps = unsafe {
+            OneWayMmapHeap.grow(
+                mini_heaps,
+                self.mini_heap_count,
+                self.mini_heap_count + 1,
+            )
+        } as *mut *mut MiniHeap;
+
+        self.mini_heap_count += 1;
+
+        let mini_heaps_realloced = unsafe {
+            core::ptr::slice_from_raw_parts_mut(
+                mini_heaps,
+                self.mini_heap_count,
+            )
+            .as_mut()
+            .unwrap()
+        };
+        self.mini_heaps = mini_heaps_realloced as *const _ as *mut _;
+        dbg!(&self.mini_heaps);
+
+        unsafe { mini_heaps_realloced[self.mini_heap_count - 1] = mini_heap.cast() };
+
+    }
+    pub unsafe fn get_mini_heap(&self, ptr: *mut ()) -> Option<*mut MiniHeap> {
+        let mini_heaps =
+            core::ptr::slice_from_raw_parts(self.mini_heaps as *mut *mut MiniHeap, self.mini_heap_count)
+                as *const [*mut MiniHeap; NUM_BINS];
+
+        mini_heaps
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|mh| {
+                let mh = mh.as_uninit_mut().unwrap().assume_init_ref();
+                if mh.arena_begin.is_null() {
+                    false 
+                } else if mh.arena_begin == ptr.cast() {
+                    true
+                } else {
+                    for_each_meshed!(mh {
+                        mh.next_mashed == MiniHeapId::HeapPointer(ptr.cast())
+                    }) 
+                }
+                
+            })
+            .map(|x| x as *const _ as *mut MiniHeap)
     }
 
     pub fn scavenge(&mut self, force: bool) {

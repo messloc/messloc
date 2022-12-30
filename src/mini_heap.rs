@@ -8,8 +8,6 @@ use core::{
     sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering},
 };
 
-use alloc::rc::Rc;
-
 use libc::c_void;
 
 use crate::{
@@ -19,19 +17,17 @@ use crate::{
     list_entry::{ListEntry, Listable},
     meshable_arena::{Page, PageType},
     one_way_mmap_heap::Heap,
-    runtime::Messloc,
     span::{self, Span},
     utils::builtin_prefetch,
     MAX_MESHES, MAX_SMALL_SIZE, PAGE_SIZE,
 };
 
 pub struct MiniHeap {
-    runtime: Messloc,
     pub arena_begin: *mut Page,
-    object_size: usize,
+    pub object_size: usize,
     pub span_start: *mut Self,
     pub free_list: ListEntry,
-    bitmap: Rc<RefCell<Bitmap<AtomicBitmapBase<4>>>>,
+    pub bitmap: Bitmap<AtomicBitmapBase<4>>,
     span: Span,
     //   internal::Bitmap _bitmap;           // 32 bytes 32
     //   const Span _span;                   // 8        40
@@ -45,6 +41,33 @@ pub struct MiniHeap {
 }
 
 impl MiniHeap {
+    pub unsafe fn new(start: *mut (), span: Span, object_size: usize) -> Self {
+        dbg!(start);
+        let object_count = 0;
+
+        let flags = Flags::new(
+            object_count as u32,
+            if object_count > 1 {
+                size_class(PAGE_SIZE)
+            } else {
+                1
+            },
+            0,
+            FreeListId::Attached as u32,
+        );
+        MiniHeap {
+            arena_begin: start.cast(),
+            object_size,
+            span_start: null_mut(),
+            free_list: ListEntry::default(),
+            bitmap: Bitmap::default(),
+            span,
+            flags,
+            current: Comparatomic::new(0),
+            next_mashed: MiniHeapId::None,
+        }
+    }
+
     // creates the MiniHeap at the location of the pointer
     pub unsafe fn new_inplace(
         this: *mut Self,
@@ -52,10 +75,16 @@ impl MiniHeap {
         object_count: usize,
         object_size: usize,
     ) {
+        addr_of_mut!((*this).arena_begin).write(null_mut());
+        addr_of_mut!((*this).span_start).write(null_mut());
+        addr_of_mut!((*this).free_list).write(ListEntry::default());
         addr_of_mut!((*this).span).write(span);
-        addr_of_mut!((*this).bitmap).write(Rc::new(RefCell::new(
-            Bitmap::<AtomicBitmapBase<4>>::default(),
-        )));
+        addr_of_mut!((*this).object_size).write(object_size);
+        addr_of_mut!((*this).current).write(Comparatomic::new(0));
+
+        addr_of_mut!((*this).next_mashed).write(MiniHeapId::None);
+        addr_of_mut!((*this).bitmap).write(Bitmap::<AtomicBitmapBase<4>>::default());
+
         addr_of_mut!((*this).flags).write(Flags::new(
             object_count as u32,
             if object_count > 1 {
@@ -98,14 +127,10 @@ impl MiniHeap {
         self.in_use_count() <= self.max_count() as usize
     }
 
-    pub fn bitmap(&self) -> Rc<RefCell<Bitmap<AtomicBitmapBase<4>>>> {
-        self.bitmap.clone()
-    }
-
-    pub unsafe fn malloc_at(&self, offset: usize) -> *mut () {
+    pub unsafe fn malloc_at(&mut self, offset: usize) -> *mut () {
         let arena = self.arena_begin;
 
-        if self.bitmap().borrow_mut().try_to_set(offset) {
+        if self.bitmap.try_to_set(offset) {
             let object_size = if self.is_large_alloc() {
                 self.span.length * PAGE_SIZE
             } else {
@@ -129,10 +154,7 @@ impl MiniHeap {
         src.set_meshed();
         let src_span = self.span_start;
         src.take_bitmap().iter_mut().for_each(|off| {
-            assert!(!self
-                .bitmap
-                .borrow_mut()
-                .is_set(off.load(Ordering::Acquire) as usize));
+            assert!(!self.bitmap.is_set(off.load(Ordering::Acquire) as usize));
 
             let offset = off.load(Ordering::Acquire) as usize;
             unsafe {
@@ -158,11 +180,11 @@ impl MiniHeap {
     }
 
     pub fn in_use_count(&self) -> usize {
-        self.bitmap.borrow().inner().in_use_count() as usize
+        self.bitmap.inner().in_use_count() as usize
     }
 
     pub fn clear_if_not_free(&mut self, offset: usize) -> bool {
-        !self.bitmap.borrow_mut().unset(offset)
+        !self.bitmap.unset(offset)
     }
 
     pub fn set_meshed(&self) {
@@ -212,7 +234,7 @@ impl MiniHeap {
     }
 
     pub fn take_bitmap(&self) -> [Comparatomic<AtomicU64>; 4] {
-        self.bitmap.borrow().set_and_exchange_all()
+        self.bitmap.set_and_exchange_all()
     }
 
     pub fn set_sv_offset(&mut self, i: usize) {
@@ -221,7 +243,7 @@ impl MiniHeap {
     }
 
     pub fn free_offset(&mut self, offset: usize) {
-        self.bitmap.borrow_mut().unset(offset);
+        self.bitmap.unset(offset);
     }
 
     pub fn mesh_count(&self) -> usize {
@@ -263,6 +285,10 @@ impl Heap for MiniHeap {
     }
 
     unsafe fn malloc(&mut self, size: usize) -> *mut () {
+        todo!()
+    }
+
+    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T { 
         todo!()
     }
 
@@ -431,7 +457,7 @@ impl Flags {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 #[allow(clippy::module_name_repetitions)]
 pub enum MiniHeapId {
     Head,
@@ -470,7 +496,7 @@ macro_rules! for_each_meshed {
                                                                         break true;
                                                                     }
             } else {
-                todo!()
+                
             }
         };
         result
@@ -500,3 +526,24 @@ macro_rules! for_each_meshed {
 //       }
 
 //     };
+
+#[cfg(test)]
+mod tests {
+    use std::mem::size_of;
+
+    use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
+    use crate::span::Span;
+
+    use super::MiniHeap;
+
+    #[test]
+    pub fn in_place_works() {
+        unsafe {
+            let h = OneWayMmapHeap.malloc(256) as *mut MiniHeap;
+            MiniHeap::new_inplace(h, Span::default(), 16, 16);
+            let mh = h.as_mut().unwrap();
+
+            assert_eq!(mh.span, Span::default());
+        }
+    }
+}

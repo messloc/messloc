@@ -3,7 +3,6 @@ use crate::mini_heap::{MiniHeap, MiniHeapId};
 use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 use crate::utils;
 use crate::{MAX_MERGE_SETS, MAX_SPLIT_LIST_SIZE, NUM_BINS};
-use alloc::rc::Rc;
 use core::cell::RefCell;
 use core::mem::MaybeUninit;
 use core::ptr::null_mut;

@@ -21,6 +21,10 @@ impl Heap for MmapHeap {
         ptr
     }
 
+    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T { 
+        todo!()
+    }
+
     unsafe fn get_size(&mut self, ptr: *mut ()) -> usize {
         self.map.iter().find(|(p, _)| *p == ptr).unwrap().1
     }

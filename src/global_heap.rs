@@ -24,13 +24,13 @@ use crate::{
     one_way_mmap_heap::{Heap, OneWayMmapHeap},
     rng::Rng,
     runtime::{FastWalkTime, FreeList, Messloc},
-    shuffle_vector::ShuffleVector,
+    shuffle_vector::{self, ShuffleVector},
     span::Span,
     splits::{MergeElement, MergeSetWithSplits, SplitType},
     ARENA_SIZE, BINNED_TRACKER_MAX_EMPTY, MAX_MERGE_SETS, MAX_MESHES, MAX_MESHES_PER_ITERATION,
     MAX_SHUFFLE_VECTOR_LENGTH, MAX_SIZE, MAX_SMALL_SIZE, MAX_SPLIT_LIST_SIZE,
     MINI_HEAP_REFILL_GOAL_SIZE, MIN_OBJECT_SIZE, MIN_STRING_LEN, NUM_BINS, OCCUPANCY_CUTOFF,
-    PAGE_SIZE,
+    PAGE_SIZE, MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR,
 };
 
 #[allow(clippy::module_name_repetitions)]
@@ -43,7 +43,7 @@ pub struct GlobalHeapStats {
 
 pub struct GlobalHeap {
     pub arena: MeshableArena,
-    pub shuffle_vector: *mut (),
+    pub shuffle_vector: *mut *mut (),
     pub free_lists: *mut FreeList,
     pub merge_set: *mut (),
     pub mesh_epoch: Epoch,
@@ -83,7 +83,7 @@ impl GlobalHeap {
         let merge_set = MergeSetWithSplits::<MAX_SPLIT_LIST_SIZE>::alloc_new();
         Self {
             arena,
-            shuffle_vector: alloc as *mut (),
+            shuffle_vector: alloc.cast(),
             free_lists: FreeList::alloc_new(),
             merge_set,
             mesh_epoch: Epoch::default(),
@@ -100,30 +100,60 @@ impl GlobalHeap {
     pub fn malloc(&mut self, bytes: usize) -> *const () {
         if let Some(size_class) = SizeMap.get_size_class(bytes) {
             let shuffle_vector = unsafe {
-                self.shuffle_vector
-                    .cast::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>()
-                    .add(size_class)
-                    .as_mut()
-                    .unwrap()
+                core::ptr::slice_from_raw_parts_mut(
+                    self.shuffle_vector
+                        .cast::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>(),
+                    NUM_BINS,
+                )
+                .as_mut()
+                .unwrap()
             };
+            dbg!(size_class);
 
-            if shuffle_vector.is_exhausted_and_no_refill() {
-                self.small_alloc_global_refill(size_class);
-            }
-            let allocator = shuffle_vector.malloc() as *mut ();
-            if allocator.is_null() {
-                let alloc = unsafe { OneWayMmapHeap.malloc(bytes) as *mut () };
-                //TODO:: create the miniheap :P
-                shuffle_vector.insert(alloc.cast());
-                if self.arena.arena_begin.is_null() {
-                    self.arena.arena_begin = alloc;
+            match shuffle_vector.get_mut(size_class) {
+                Some(mut sv) if !sv.start.is_null() => {
+                    if sv.is_exhausted_and_no_refill() {
+                        self.small_alloc_global_refill(size_class);
+                    }
+                    let allocator = sv.malloc() as *mut ();
+                    if allocator.is_null() {
+                        let alloc = unsafe { OneWayMmapHeap.malloc(bytes) as *mut () };
+                        let mini_alloc = unsafe {
+                            OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeap>()) as *mut MiniHeap
+                        };
+                        let mini_heap = unsafe { MiniHeap::new(alloc, Span::default(), bytes) };
+                        dbg!(mini_heap.arena_begin);
+                        unsafe { mini_alloc.write(mini_heap) };
+                        sv.insert(mini_alloc);
+                        self.arena.insert_mini_heap(mini_alloc);
+                        if self.arena.arena_begin.is_null() {
+                            self.arena.arena_begin = alloc;
+                        }
+                        alloc
+                    } else {
+                        allocator
+                    }
                 }
-                alloc
-            } else {
-                allocator
+                Some(mut sv) => {
+                    let alloced = unsafe { self.alloc_page_aligned(0, 1) as *mut MiniHeap };
+                    let mini_alloc = unsafe {
+                        OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeap>()) as *mut MiniHeap
+                    };
+                    let mini_heap =
+                        unsafe { MiniHeap::new(alloced.cast(), Span::default(), bytes) };
+                    unsafe { mini_alloc.write(mini_heap) };
+                    sv.insert(mini_alloc);
+                    self.arena.insert_mini_heap(mini_alloc);
+
+                    dbg!(alloced.cast())
+                }
+                _ => {
+                    dbg!("none non non");
+                    todo!()
+                }
             }
         } else {
-            self.alloc_page_aligned(1, page_count(bytes))
+            unsafe { self.alloc_page_aligned(1, page_count(bytes)).cast() }
         }
     }
 
@@ -135,21 +165,22 @@ impl GlobalHeap {
     }
 
     /// Allocate the requested number of pages
-    fn alloc_page_aligned(&mut self, page_align: usize, page_count: usize) -> *const () {
+    unsafe fn alloc_page_aligned(&mut self, page_align: usize, page_count: usize) -> *mut MiniHeap {
         // if given a very large allocation size (e.g. (usize::MAX)-8), it is possible
         // the pages calculation overflowed. An allocation that big is impossible
         // to satisfy anyway, so just fail early.
         if page_count == 0 {
-            return null();
+            return null_mut();
         }
 
-        let miniheap = self.alloc_miniheap(page_count, 1, page_count * PAGE_SIZE, page_align);
+        let miniheap = self.alloc_miniheap(page_count, page_align);
 
         //   d_assert(mh->isLargeAlloc());
         //   d_assert(mh->spanSize() == pageCount * kPageSize);
         //   // d_assert(mh->objectSize() == pageCount * kPageSize);
+        //
 
-        unsafe { (*miniheap).malloc_at(0) }
+        miniheap
     }
 
     unsafe fn free_for(&mut self, heap: *mut MiniHeap, offset: usize, mut epoch: Epoch) {
@@ -279,7 +310,7 @@ impl GlobalHeap {
                 PageType::Dirty
             };
             let span_start = mh.span_start;
-            self.free(span_start as *mut ());
+            self.pfree(span_start as *mut ());
 
             if untrack && !mh.is_meshed() {
                 self.untrack_mini_heap_locked(mini_heap);
@@ -315,7 +346,55 @@ impl GlobalHeap {
     }
 
     #[allow(clippy::missing_safety_doc)]
-    pub unsafe fn free(&mut self, ptr: *mut ()) {
+    pub unsafe fn free(&mut self, ptr: *mut (), bytes: usize) {
+        if let Some(size_class) = SizeMap.get_size_class(bytes) {
+            if self.shuffle_vector.is_null() {
+                let size = core::mem::size_of::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>();
+
+                let sv = unsafe { OneWayMmapHeap.malloc(size) as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>};
+
+                let sv_slice = core::slice::from_raw_parts_mut(sv, NUM_BINS);
+                sv_slice[size_class] = ShuffleVector::new();
+                let mh = self.arena.get_mini_heap(ptr).unwrap();
+                sv.as_mut().unwrap().insert(mh);
+
+            } else {
+            let shuffle_vectors = unsafe {
+                core::ptr::slice_from_raw_parts_mut(
+                    self.shuffle_vector
+                        .cast::<*mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>(),
+                    NUM_BINS,
+                )
+                .as_mut()
+                .unwrap()
+            };
+            dbg!(shuffle_vectors.get_mut(size_class).unwrap().as_mut().unwrap().offset.load(Ordering::Acquire));
+            match shuffle_vectors.get_mut(size_class) {
+                Some(v) => {
+                    let mh = self.arena.get_mini_heap(ptr).unwrap();
+                    if v.is_null() { 
+                        let vector = OneWayMmapHeap.malloc(core::mem::size_of::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>()) as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>;
+                        vector.write(ShuffleVector::new());
+                        shuffle_vectors[size_class] = vector; 
+                    } else {
+                        let sv = v.as_mut().unwrap();
+                        let mini_heaps = core::ptr::slice_from_raw_parts_mut(sv.mini_heaps as *mut *mut MiniHeap, MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR);
+                        let mini_heaps = OneWayMmapHeap.grow(sv.mini_heaps as *mut *mut MiniHeap, sv.mini_heap_count, sv.mini_heap_count + 1);
+
+                        sv.mini_heap_count += 1;
+                        let mini_heaps = core::ptr::slice_from_raw_parts_mut(mini_heaps, sv.mini_heap_count+1).cast::<[*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR]>().as_mut().unwrap();
+                        mini_heaps[sv.mini_heap_count - 1] = mh;
+                    }
+                }
+                _ => {
+                    unreachable!()
+                }
+                }
+            }
+        }
+    }
+    #[allow(clippy::missing_safety_doc)]
+    pub unsafe fn pfree(&mut self, ptr: *mut ()) {
         let mut start_epoch = Epoch::default();
         let offset = unsafe { ptr.offset_from(self.arena.arena_begin as *mut ()) };
 
@@ -445,7 +524,7 @@ impl GlobalHeap {
 
     pub fn mesh_size_class_locked(&mut self, size_class: usize) -> usize {
         let merge_set_count = self.shifted_splitting(size_class);
-
+        //TODO: remove allocation
         let mut merge_set: Vec<(*mut MiniHeap, *mut MiniHeap)> = {
             unsafe {
                 self.merge_set
@@ -613,15 +692,14 @@ impl GlobalHeap {
             let mut idx_right = j;
             count += (0..right.min(64))
                 .scan((0, 0), |(mut count, mut found_count), i| {
-                    let bitmap1 = unsafe { &left_set.get(j).unwrap().as_mut().unwrap().bitmap() };
-                    let bitmap2 = unsafe { &right_set.get(j).unwrap().as_mut().unwrap().bitmap() };
+                    let bitmap1 = unsafe { &left_set.get(j).unwrap().as_mut().unwrap().bitmap };
+                    let bitmap2 = unsafe { &right_set.get(j).unwrap().as_mut().unwrap().bitmap };
 
                     let is_meshable = bitmap1
-                        .borrow()
                         .internal_type
                         .bits()
                         .iter()
-                        .zip(bitmap2.borrow().internal_type.bits().iter())
+                        .zip(bitmap2.internal_type.bits().iter())
                         .fold(0u64, |mut acc, (lb, rb)| {
                             acc |= lb & rb;
                             acc
@@ -772,9 +850,9 @@ impl GlobalHeap {
 
     pub fn page_aligned_alloc(&mut self, alignment: usize, size: usize) -> *mut () {
         let page_count = page_count(size);
-        let mh = unsafe {
+        let mut mh = unsafe {
             self.alloc_mini_heap_locked(page_count, 1, page_count * PAGE_SIZE, alignment)
-                .as_ref()
+                .as_mut()
                 .unwrap()
         };
 
@@ -822,45 +900,19 @@ impl GlobalHeap {
         addr_of_mut!(mh)
     }
 
-    fn alloc_miniheap(
-        &mut self,
-        page_count: usize,
-        object_count: usize,
-        object_size: usize,
-        page_align: usize,
-    ) -> *mut MiniHeap {
+    fn alloc_miniheap(&mut self, page_count: usize, page_align: usize) -> *mut MiniHeap {
         debug_assert!(page_count > 0, "should allocate at least 1 page");
 
-        let buf = unsafe {
-            self.arena
-                .mh_allocator
-                .cast::<CheapHeap<64, { ARENA_SIZE / PAGE_SIZE }>>()
-                .as_mut()
-                .unwrap()
-                .alloc()
-        };
-        debug_assert_ne!(buf, null_mut());
-        // allocate out of the arena
-        let (span, span_begin) = self.arena.page_alloc(page_count, page_align);
-        debug_assert_ne!(span_begin, null_mut(), "arena allocation failed");
-        debug_assert_eq!(
-            span_begin
-                .cast::<[u8; PAGE_SIZE]>()
-                .align_offset(page_align),
-            0,
-            "arena allocation unaligned"
-        );
-        debug_assert!(size_of::<MiniHeap>() <= 64);
-        let mh = buf as *mut MiniHeap;
-        unsafe { MiniHeap::new_inplace(mh, span.clone(), object_count, object_size) };
+        let buf = unsafe { OneWayMmapHeap.malloc(PAGE_SIZE) } as *mut MiniHeap;
 
-        (0..span.length).for_each(|i| unsafe {
-            self.arena
-                .mh_allocator
-                .cast::<MiniHeapId>()
-                .add(span.offset + i)
-                .write(MiniHeapId::HeapPointer(mh));
-        });
+        // allocate out of the arena
+        // TODO: Check if we need this since it doesn't match the current lazy model
+        // let (span, span_begin) = self.arena.page_alloc(page_count, page_align);
+
+        //TODO: Adjust value of span by going through find_pages on the arena and the related code
+        unsafe {
+            buf.write(MiniHeap::new(buf.cast(), Span::default(), PAGE_SIZE));
+        }
 
         // // mesh::debug("%p (%u) created!\n", mh, GetMiniHeapID(mh));
 
@@ -869,7 +921,7 @@ impl GlobalHeap {
         let count = self.mini_heap_count.load(Ordering::Acquire);
         self.stats.high_water_mark.store(count, Ordering::Release);
 
-        mh
+        buf
     }
 }
 
