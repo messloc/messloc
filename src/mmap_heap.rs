@@ -21,7 +21,7 @@ impl Heap for MmapHeap {
         ptr
     }
 
-    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T { 
+    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T {
         todo!()
     }
 

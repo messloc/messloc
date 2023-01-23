@@ -28,9 +28,9 @@ use crate::{
     span::Span,
     splits::{MergeElement, MergeSetWithSplits, SplitType},
     ARENA_SIZE, BINNED_TRACKER_MAX_EMPTY, MAX_MERGE_SETS, MAX_MESHES, MAX_MESHES_PER_ITERATION,
-    MAX_SHUFFLE_VECTOR_LENGTH, MAX_SIZE, MAX_SMALL_SIZE, MAX_SPLIT_LIST_SIZE,
-    MINI_HEAP_REFILL_GOAL_SIZE, MIN_OBJECT_SIZE, MIN_STRING_LEN, NUM_BINS, OCCUPANCY_CUTOFF,
-    PAGE_SIZE, MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR,
+    MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR, MAX_SHUFFLE_VECTOR_LENGTH, MAX_SIZE, MAX_SMALL_SIZE,
+    MAX_SPLIT_LIST_SIZE, MINI_HEAP_REFILL_GOAL_SIZE, MIN_OBJECT_SIZE, MIN_STRING_LEN, NUM_BINS,
+    OCCUPANCY_CUTOFF, PAGE_SIZE,
 };
 
 #[allow(clippy::module_name_repetitions)]
@@ -43,7 +43,7 @@ pub struct GlobalHeapStats {
 
 pub struct GlobalHeap {
     pub arena: MeshableArena,
-    pub shuffle_vector: *mut *mut (),
+    pub shuffle_vector: *mut (),
     pub free_lists: *mut FreeList,
     pub merge_set: *mut (),
     pub mesh_epoch: Epoch,
@@ -68,22 +68,35 @@ impl GlobalHeap {
         //let period = mesh_period.parse().unwrap();
         let period = 0;
 
-        let alloc = unsafe {
+        let mut sv = unsafe {
             OneWayMmapHeap.malloc(core::mem::size_of::<
                 [ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS],
-            >()) as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>
+            >())
         };
+        let mut sv_slice = unsafe {
+            core::ptr::slice_from_raw_parts_mut(
+                sv as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>,
+                NUM_BINS,
+            )
+        };
+        let mut alloc = unsafe { sv_slice.as_mut().unwrap() };
 
-        (0..NUM_BINS).for_each(|bin| unsafe {
-            let element = alloc.add(bin);
-            element.write(ShuffleVector::new());
-        });
+        alloc
+            .iter_mut()
+            .for_each(|shuffle| *shuffle = ShuffleVector::new());
+
+        let sv_slice = unsafe {
+            core::ptr::slice_from_raw_parts_mut(
+                sv.cast::<*mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>(),
+                NUM_BINS,
+            )
+        } as *mut [*mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS];
 
         let arena = MeshableArena::init();
         let merge_set = MergeSetWithSplits::<MAX_SPLIT_LIST_SIZE>::alloc_new();
         Self {
             arena,
-            shuffle_vector: alloc.cast(),
+            shuffle_vector: sv_slice as *const _ as *mut (),
             free_lists: FreeList::alloc_new(),
             merge_set,
             mesh_epoch: Epoch::default(),
@@ -108,47 +121,45 @@ impl GlobalHeap {
                 .as_mut()
                 .unwrap()
             };
-            dbg!(size_class);
 
             match shuffle_vector.get_mut(size_class) {
-                Some(mut sv) if !sv.start.is_null() => {
-                    if sv.is_exhausted_and_no_refill() {
-                        self.small_alloc_global_refill(size_class);
-                    }
-                    let allocator = sv.malloc() as *mut ();
-                    if allocator.is_null() {
-                        let alloc = unsafe { OneWayMmapHeap.malloc(bytes) as *mut () };
+                Some(s) => {
+                    if !s.start.is_null() {
+                        if s.is_exhausted_and_no_refill() {
+                            self.small_alloc_global_refill(size_class);
+                        }
+                        let allocator = s.malloc() as *mut ();
+                        if allocator.is_null() {
+                            let alloc = unsafe { OneWayMmapHeap.malloc(bytes) as *mut () };
+                            let mini_alloc = unsafe {
+                                OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeap>())
+                                    as *mut MiniHeap
+                            };
+                            let mini_heap = unsafe { MiniHeap::new(alloc, Span::default(), bytes) };
+                            unsafe { mini_alloc.write(mini_heap) };
+                            s.insert(mini_alloc);
+                            self.arena.insert_mini_heap(mini_alloc);
+                            if self.arena.arena_begin.is_null() {
+                                self.arena.arena_begin = alloc;
+                            }
+                            alloc
+                        } else {
+                            allocator
+                        }
+                    } else {
+                        let alloced = unsafe { self.alloc_page_aligned(0, 1) as *mut MiniHeap };
                         let mini_alloc = unsafe {
                             OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeap>()) as *mut MiniHeap
                         };
-                        let mini_heap = unsafe { MiniHeap::new(alloc, Span::default(), bytes) };
-                        dbg!(mini_heap.arena_begin);
+                        let mini_heap =
+                            unsafe { MiniHeap::new(alloced.cast(), Span::default(), bytes) };
                         unsafe { mini_alloc.write(mini_heap) };
-                        sv.insert(mini_alloc);
+                        s.insert(mini_alloc);
                         self.arena.insert_mini_heap(mini_alloc);
-                        if self.arena.arena_begin.is_null() {
-                            self.arena.arena_begin = alloc;
-                        }
-                        alloc
-                    } else {
-                        allocator
+                        alloced.cast()
                     }
                 }
-                Some(mut sv) => {
-                    let alloced = unsafe { self.alloc_page_aligned(0, 1) as *mut MiniHeap };
-                    let mini_alloc = unsafe {
-                        OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeap>()) as *mut MiniHeap
-                    };
-                    let mini_heap =
-                        unsafe { MiniHeap::new(alloced.cast(), Span::default(), bytes) };
-                    unsafe { mini_alloc.write(mini_heap) };
-                    sv.insert(mini_alloc);
-                    self.arena.insert_mini_heap(mini_alloc);
-
-                    dbg!(alloced.cast())
-                }
                 _ => {
-                    dbg!("none non non");
                     todo!()
                 }
             }
@@ -173,14 +184,12 @@ impl GlobalHeap {
             return null_mut();
         }
 
-        let miniheap = self.alloc_miniheap(page_count, page_align);
+        self.alloc_miniheap(page_count, page_align)
 
         //   d_assert(mh->isLargeAlloc());
         //   d_assert(mh->spanSize() == pageCount * kPageSize);
         //   // d_assert(mh->objectSize() == pageCount * kPageSize);
         //
-
-        miniheap
     }
 
     unsafe fn free_for(&mut self, heap: *mut MiniHeap, offset: usize, mut epoch: Epoch) {
@@ -350,37 +359,62 @@ impl GlobalHeap {
         if let Some(size_class) = SizeMap.get_size_class(bytes) {
             if self.shuffle_vector.is_null() {
                 let size = core::mem::size_of::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>();
-
-                let sv = unsafe { OneWayMmapHeap.malloc(size) as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>};
-
-                let sv_slice = core::slice::from_raw_parts_mut(sv, NUM_BINS);
-                sv_slice[size_class] = ShuffleVector::new();
+                let sv_list = unsafe { OneWayMmapHeap.malloc(size * NUM_BINS) }
+                    as *mut [*mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS];
+                let sv_slice = sv_list.as_mut().unwrap();
+                let sv = unsafe {
+                    OneWayMmapHeap.malloc(size) as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>
+                };
+                sv.write(ShuffleVector::new());
                 let mh = self.arena.get_mini_heap(ptr).unwrap();
                 sv.as_mut().unwrap().insert(mh);
-
+                sv_slice[size_class] = sv;
             } else {
-            let shuffle_vectors = unsafe {
-                core::ptr::slice_from_raw_parts_mut(
+                let shuffle_vectors = core::ptr::slice_from_raw_parts_mut(
                     self.shuffle_vector
                         .cast::<*mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>(),
                     NUM_BINS,
                 )
                 .as_mut()
-                .unwrap()
-            };
-            dbg!(shuffle_vectors.get_mut(size_class).unwrap().as_mut().unwrap().offset.load(Ordering::Acquire));
+                .unwrap();
+
+                match shuffle_vectors.get_mut(size_class) {
+                    Some(v) if v.is_null() => {
+                        todo!()
+                    }
+                    Some(v) => {
+                        let mh = self.arena.get_mini_heap(ptr).unwrap();
+                        let mut sv = v.as_mut().unwrap();
+                        let mini_heaps = core::ptr::slice_from_raw_parts_mut(
+                            sv.mini_heaps as *mut MiniHeap,
+                            sv.mini_heap_count,
+                        )
+                            as *mut [*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR];
+                        let mini_heaps: &mut [*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR] =
+                            OneWayMmapHeap
+                                .grow(mini_heaps, sv.mini_heap_count, sv.mini_heap_count + 1)
+                                .as_mut()
+                                .unwrap();
+                        mini_heaps[sv.mini_heap_count] = mh;
+
+                        sv.mini_heap_count += 1;
+                    }
+                    _ => todo!(),
+                }
+            }
+
+            /*
             match shuffle_vectors.get_mut(size_class) {
                 Some(v) => {
                     let mh = self.arena.get_mini_heap(ptr).unwrap();
-                    if v.is_null() { 
+                    if v.is_null() {
                         let vector = OneWayMmapHeap.malloc(core::mem::size_of::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>()) as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>;
                         vector.write(ShuffleVector::new());
-                        shuffle_vectors[size_class] = vector; 
+                        shuffle_vectors[size_class] = vector;
                     } else {
                         let sv = v.as_mut().unwrap();
                         let mini_heaps = core::ptr::slice_from_raw_parts_mut(sv.mini_heaps as *mut *mut MiniHeap, MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR);
                         let mini_heaps = OneWayMmapHeap.grow(sv.mini_heaps as *mut *mut MiniHeap, sv.mini_heap_count, sv.mini_heap_count + 1);
-
                         sv.mini_heap_count += 1;
                         let mini_heaps = core::ptr::slice_from_raw_parts_mut(mini_heaps, sv.mini_heap_count+1).cast::<[*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR]>().as_mut().unwrap();
                         mini_heaps[sv.mini_heap_count - 1] = mh;
@@ -389,8 +423,8 @@ impl GlobalHeap {
                 _ => {
                     unreachable!()
                 }
-                }
             }
+            */
         }
     }
     #[allow(clippy::missing_safety_doc)]

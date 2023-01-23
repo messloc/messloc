@@ -42,7 +42,6 @@ pub struct MiniHeap {
 
 impl MiniHeap {
     pub unsafe fn new(start: *mut (), span: Span, object_size: usize) -> Self {
-        dbg!(start);
         let object_count = 0;
 
         let flags = Flags::new(
@@ -288,7 +287,7 @@ impl Heap for MiniHeap {
         todo!()
     }
 
-    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T { 
+    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T {
         todo!()
     }
 
@@ -496,7 +495,7 @@ macro_rules! for_each_meshed {
                                                                         break true;
                                                                     }
             } else {
-                
+
             }
         };
         result

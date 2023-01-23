@@ -13,15 +13,14 @@
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(assert_matches)]
-#![feature(once_cell)]
 #![feature(allocator_api)]
 #![feature(slice_ptr_len)]
 #![feature(ptr_metadata)]
 #![feature(set_ptr_value)]
 #![feature(unsized_locals)]
 #![feature(ptr_as_uninit)]
+#![feature(if_let_guard)]
 #![recursion_limit = "256"]
-#![deny(clippy::pedantic)]
 
 extern crate alloc;
 
@@ -104,29 +103,23 @@ pub struct MessyLock(pub once_cell::sync::OnceCell<Messloc>);
 impl MessyLock {
     pub fn init_in_place(&self) {
         OnceCell::set(&self.0, Messloc::init());
-        if OnceCell::get(&self.0).is_none() {
-            dbg!("non non");
-        }
+        if OnceCell::get(&self.0).is_none() {}
     }
 }
 
 unsafe impl GlobalAlloc for MessyLock {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        dbg!(layout);
         if once_cell::sync::OnceCell::get(&self.0).is_none() {
             self.init_in_place();
         }
         let ptr = OnceCell::get(&self.0).unwrap().allocate(layout);
-        dbg!("dropped");
         ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        dbg!("here");
         if let Some(lazy) = once_cell::sync::OnceCell::get(&self.0) {
             lazy.deallocate(ptr, layout);
         } else {
-            dbg!("unreachabloo");
             unreachable!()
         }
     }

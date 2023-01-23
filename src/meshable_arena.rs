@@ -1,7 +1,6 @@
 use crate::arena_fs::open_shm_span_file;
 use crate::bitmap::{Bitmap, BitmapBase, RelaxedBitmapBase};
 use crate::comparatomic::Comparatomic;
-use crate::{for_each_meshed, NUM_BINS};
 use crate::one_way_mmap_heap::OneWayMmapHeap;
 use crate::span::{Length, Offset, Span, SpanList};
 use crate::{
@@ -11,6 +10,7 @@ use crate::{
     ARENA_SIZE, DEFAULT_MAX_MESH_COUNT, DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE,
     SPAN_CLASS_COUNT,
 };
+use crate::{for_each_meshed, NUM_BINS};
 use core::mem::{size_of, MaybeUninit};
 use core::ptr::addr_of_mut;
 use core::{
@@ -242,36 +242,29 @@ impl MeshableArena {
     }
 
     pub fn insert_mini_heap(&mut self, mini_heap: *mut MiniHeap) {
-        let mini_heaps = core::ptr::slice_from_raw_parts_mut(self.mini_heaps, self.mini_heap_count) as *mut [MiniHeap; NUM_BINS];
+        let mini_heaps = core::ptr::slice_from_raw_parts_mut(self.mini_heaps, self.mini_heap_count)
+            as *mut [MiniHeap; NUM_BINS];
 
         let mini_heaps = unsafe {
-            OneWayMmapHeap.grow(
-                mini_heaps,
-                self.mini_heap_count,
-                self.mini_heap_count + 1,
-            )
+            OneWayMmapHeap.grow(mini_heaps, self.mini_heap_count, self.mini_heap_count + 1)
         } as *mut *mut MiniHeap;
 
         self.mini_heap_count += 1;
 
         let mini_heaps_realloced = unsafe {
-            core::ptr::slice_from_raw_parts_mut(
-                mini_heaps,
-                self.mini_heap_count,
-            )
-            .as_mut()
-            .unwrap()
+            core::ptr::slice_from_raw_parts_mut(mini_heaps, self.mini_heap_count)
+                .as_mut()
+                .unwrap()
         };
         self.mini_heaps = mini_heaps_realloced as *const _ as *mut _;
-        dbg!(&self.mini_heaps);
 
         unsafe { mini_heaps_realloced[self.mini_heap_count - 1] = mini_heap.cast() };
-
     }
     pub unsafe fn get_mini_heap(&self, ptr: *mut ()) -> Option<*mut MiniHeap> {
-        let mini_heaps =
-            core::ptr::slice_from_raw_parts(self.mini_heaps as *mut *mut MiniHeap, self.mini_heap_count)
-                as *const [*mut MiniHeap; NUM_BINS];
+        let mini_heaps = core::ptr::slice_from_raw_parts(
+            self.mini_heaps as *mut *mut MiniHeap,
+            self.mini_heap_count,
+        ) as *const [*mut MiniHeap; NUM_BINS];
 
         mini_heaps
             .as_ref()
@@ -280,15 +273,14 @@ impl MeshableArena {
             .find(|mh| {
                 let mh = mh.as_uninit_mut().unwrap().assume_init_ref();
                 if mh.arena_begin.is_null() {
-                    false 
+                    false
                 } else if mh.arena_begin == ptr.cast() {
                     true
                 } else {
                     for_each_meshed!(mh {
                         mh.next_mashed == MiniHeapId::HeapPointer(ptr.cast())
-                    }) 
+                    })
                 }
-                
             })
             .map(|x| x as *const _ as *mut MiniHeap)
     }

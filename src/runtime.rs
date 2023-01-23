@@ -105,19 +105,16 @@ impl Messloc {
     #[allow(clippy::missing_safety_doc)]
     #[must_use]
     pub unsafe fn allocate(&self, layout: Layout) -> *mut u8 {
-        dbg!("allocates");
         let mut heap = &mut self.0.lock().global_heap;
-        dbg!(heap.malloc(layout.size()) as *mut u8)
+        heap.malloc(layout.size()) as *mut u8
     }
 
     #[allow(clippy::missing_safety_doc)]
     pub unsafe fn deallocate(&self, ptr: *mut u8, layout: Layout) {
-        dbg!("deällocates");
         self.0
             .lock()
             .global_heap
             .free(ptr as *mut (), layout.size());
-        dbg!("i am now freee...");
     }
 }
 

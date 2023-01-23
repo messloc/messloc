@@ -87,7 +87,7 @@ impl<const ALLOC_SIZE: usize, const MAX_COUNT: usize> Heap for CheapHeap<ALLOC_S
         page_data as *mut Self::MallocType
     }
 
-    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T { 
+    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T {
         todo!()
     }
 
@@ -172,13 +172,12 @@ impl Heap for DynCheapHeap {
         OneWayMmapHeap.malloc(size)
     }
 
-    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T { 
-    todo!()
+    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T {
+        todo!()
     }
 
     unsafe fn get_size(&mut self, _: *mut ()) -> usize {
         self.alloc_size
-
     }
 
     unsafe fn free(&mut self, ptr: *mut ()) {
