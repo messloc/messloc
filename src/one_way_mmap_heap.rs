@@ -58,3 +58,25 @@ impl Heap for OneWayMmapHeap {
 
     unsafe fn free(&mut self, _: *mut ()) {}
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    pub fn test_large_alloc() {
+        unsafe {
+            let big_array = [0u64; 2200];
+            let heap = OneWayMmapHeap.malloc(core::mem::size_of_val(&big_array)) as *mut u64;
+            let heap_slice = core::ptr::slice_from_raw_parts_mut(heap, 2200) as *mut [u64; 2200];
+            let heap_slice = heap_slice.as_mut().unwrap();
+            dbg!(heap_slice.len());
+            heap_slice.iter_mut().enumerate().for_each(|(i, sl)| {
+                *sl = big_array[i] + i as u64;
+            });
+
+            heap_slice.iter_mut().for_each(|(sl)| {
+                dbg!(sl);
+            });
+        }
+    }
+}

@@ -51,7 +51,7 @@ mod one_way_mmap_heap;
 mod panic;
 mod rng;
 mod runtime;
-mod shuffle_vector;
+pub mod shuffle_vector;
 mod span;
 mod splits;
 mod utils;
