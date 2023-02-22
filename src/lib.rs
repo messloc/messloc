@@ -7,7 +7,6 @@
 #![allow(unused)]
 #![allow(clippy::needless_for_each)]
 #![allow(clippy::module_name_repetitions)]
-#![allow(incomplete_features)] // used for unsized locals feature
 #![feature(type_alias_impl_trait)]
 #![feature(let_chains)]
 #![feature(maybe_uninit_uninit_array)]
@@ -17,12 +16,9 @@
 #![feature(slice_ptr_len)]
 #![feature(ptr_metadata)]
 #![feature(set_ptr_value)]
-#![feature(unsized_locals)]
 #![feature(ptr_as_uninit)]
 #![feature(if_let_guard)]
 #![recursion_limit = "256"]
-
-extern crate alloc;
 
 use core::{
     alloc::{AllocError, Allocator, GlobalAlloc, Layout},
@@ -42,13 +38,13 @@ mod cheap_heap;
 mod class_array;
 mod comparatomic;
 mod fake_std;
+mod flags;
 pub mod global_heap;
 mod list_entry;
-mod meshable_arena;
+pub mod meshable_arena;
 mod mini_heap;
 mod mmap_heap;
 mod one_way_mmap_heap;
-mod panic;
 mod rng;
 mod runtime;
 pub mod shuffle_vector;
@@ -123,4 +119,8 @@ unsafe impl GlobalAlloc for MessyLock {
             unreachable!()
         }
     }
+}
+
+impl Drop for MessyLock {
+    fn drop(&mut self) {}
 }

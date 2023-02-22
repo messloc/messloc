@@ -3,7 +3,7 @@ use core::ptr::addr_of_mut;
 use core::sync::atomic::Ordering;
 
 use crate::fake_std::Arc;
-use crate::mini_heap::FreeListId;
+use crate::flags::FreeListId;
 use crate::mini_heap::{MiniHeap, MiniHeapId};
 use crate::runtime::Messloc;
 use spin::mutex::Mutex;

@@ -17,10 +17,11 @@ use crate::{
     cheap_heap::CheapHeap,
     class_array::CLASS_ARRAY,
     comparatomic::Comparatomic,
+    flags::FreeListId,
     for_each_meshed,
     list_entry::ListEntry,
     meshable_arena::{MeshableArena, PageType},
-    mini_heap::{self, size_class, FreeListId, MiniHeap, MiniHeapId},
+    mini_heap::{self, MiniHeap, MiniHeapId},
     one_way_mmap_heap::{Heap, OneWayMmapHeap},
     rng::Rng,
     runtime::{FastWalkTime, FreeList, Messloc},
@@ -111,14 +112,7 @@ impl GlobalHeap {
                         let allocator = s.malloc() as *mut ();
                         if allocator.is_null() {
                             let alloc = unsafe { OneWayMmapHeap.malloc(bytes) as *mut () };
-                            let mini_alloc = unsafe {
-                                OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeap>())
-                                    as *mut MiniHeap
-                            };
-                            let mini_heap = unsafe { MiniHeap::new(alloc, Span::default(), bytes) };
-                            unsafe { mini_alloc.write(mini_heap) };
-                            s.insert(mini_alloc);
-                            self.arena.insert_mini_heap(mini_alloc);
+                            unsafe { self.arena.get_new_mini_heap(alloc, bytes) };
                             if self.arena.arena_begin.is_null() {
                                 self.arena.arena_begin = alloc;
                             }
@@ -128,15 +122,7 @@ impl GlobalHeap {
                         }
                     } else {
                         let alloced = unsafe { self.alloc_page_aligned(0, 1) as *mut MiniHeap };
-                        let mini_alloc = unsafe {
-                            OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeap>()) as *mut MiniHeap
-                        };
-                        let mini_heap =
-                            unsafe { MiniHeap::new(alloced.cast(), Span::default(), bytes) };
-                        unsafe { mini_alloc.write(mini_heap) };
-                        s.insert(mini_alloc);
-                        self.arena.insert_mini_heap(mini_alloc);
-                        alloced.cast()
+                        unsafe { self.arena.get_new_mini_heap(alloced.cast(), bytes) }
                     }
                 }
                 _ => {
@@ -148,7 +134,6 @@ impl GlobalHeap {
         }
     }
 
-    #[allow(clippy::missing_safety_doc)]
     pub unsafe fn free(&mut self, ptr: *mut (), bytes: usize) {
         if let Some(size_class) = SizeMap.get_size_class(bytes) {
             let shuffle_vectors = self
@@ -176,9 +161,8 @@ impl GlobalHeap {
 
                     core::mem::replace(&mut mini_heaps[pos], mh);
                 }
-                _ => todo!(),
+                _ => {}
             }
-            dbg!("you are free now!");
         }
 
         /*

@@ -5,5 +5,5 @@ extern crate alloc;
 #[cfg_attr(not(test), global_allocator)]
 static ALLOCATOR: MessyLock = MessyLock(once_cell::sync::OnceCell::new());
 pub fn main() {
-    let i = 1;
+    let i = 5;
 }

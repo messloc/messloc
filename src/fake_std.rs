@@ -53,6 +53,10 @@ impl<T> Deref for Arc<T> {
 unsafe impl<T: ?Sized + Sync + Send> Send for Arc<T> {}
 unsafe impl<T: ?Sized + Sync + Send> Sync for Arc<T> {}
 
+impl<T: ?Sized> Drop for Arc<T> {
+    fn drop(&mut self) {}
+}
+
 pub struct String {
     vec: *mut u8,
     len: usize,

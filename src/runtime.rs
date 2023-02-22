@@ -85,16 +85,16 @@ impl FastWalkTime {
     }
 }
 
-pub struct Messloc(pub Arc<Mutex<FastWalkTime>>);
+pub struct Messloc(pub Mutex<FastWalkTime>);
 
 impl Messloc {
     #[must_use]
     pub fn init() -> Self {
-        Self(Arc::new(Mutex::new(FastWalkTime {
+        Self(Mutex::new(FastWalkTime {
             pid: 0,
             signal_fd: 0,
             global_heap: GlobalHeap::init(),
-        })))
+        }))
     }
 
     pub fn update_pid(&mut self) {
@@ -126,6 +126,10 @@ impl PartialEq<Self> for Messloc {
 
         true
     }
+}
+
+impl Drop for Messloc {
+    fn drop(&mut self) {}
 }
 
 pub struct StartThreadArgs {
