@@ -378,7 +378,7 @@ impl MeshableArena {
     }
 
     #[allow(clippy::unused_self)]
-    pub fn begin_mesh(&self, remove: *mut c_void, size: usize) {
+    pub unsafe fn begin_mesh(&self, remove: *mut c_void, size: usize) {
         unsafe { mprotect_read(remove, size).unwrap() };
     }
 
@@ -402,7 +402,7 @@ impl MeshableArena {
         };
     }
 
-    pub fn lookup_mini_heap(&self, ptr: *mut ()) -> *mut MiniHeap {
+    pub unsafe fn lookup_mini_heap(&self, ptr: *mut ()) -> *mut MiniHeap {
         let offset = unsafe { ptr.offset_from(self.arena_begin as *mut ()) } as usize;
 
         let mh = unsafe {
