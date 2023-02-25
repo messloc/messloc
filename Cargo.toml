@@ -13,7 +13,7 @@ libc = "0.2.126"
 rand_xoshiro = "0.6"
 memmap2 = "0.5.7"
 spin = { version = "0.9.4", features = ["mutex"] }
-once_cell = { path = "../once_cell" }
+once_cell = "1.17.1"
 
 [features]
 allocator-api = []
