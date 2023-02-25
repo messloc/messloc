@@ -242,7 +242,9 @@ impl MeshableArena {
     pub fn set_max_mesh_count(&mut self, max_mesh_count: usize) {
         self.max_mesh_count = max_mesh_count;
     }
-
+    ///# Safety
+    /// Unsafe
+    /// 
     pub unsafe fn get_new_mini_heap(&mut self, alloc: *mut (), bytes: usize) -> *mut () {
         let mh_slice = core::ptr::slice_from_raw_parts_mut(self.mini_heaps, NUM_BINS)
             as *mut [MiniHeap; NUM_BINS];
@@ -274,7 +276,8 @@ impl MeshableArena {
             }
         }
     }
-
+    ///# Safety
+    /// Unsafe
     pub unsafe fn get_mini_heap(&self, ptr: *mut ()) -> Option<*mut MiniHeap> {
         let mini_heaps = core::ptr::slice_from_raw_parts(
             self.mini_heaps as *mut *mut MiniHeap,
@@ -378,6 +381,8 @@ impl MeshableArena {
     }
 
     #[allow(clippy::unused_self)]
+    ///# Safety
+    /// Unsafe
     pub unsafe fn begin_mesh(&self, remove: *mut c_void, size: usize) {
         unsafe { mprotect_read(remove, size).unwrap() };
     }
@@ -401,7 +406,8 @@ impl MeshableArena {
             .unwrap()
         };
     }
-
+    ///# Safety
+    /// Unsafe
     pub unsafe fn lookup_mini_heap(&self, ptr: *mut ()) -> *mut MiniHeap {
         let offset = unsafe { ptr.offset_from(self.arena_begin as *mut ()) } as usize;
 

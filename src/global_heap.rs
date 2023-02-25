@@ -134,6 +134,9 @@ impl GlobalHeap {
         }
     }
 
+    ///# Safety
+    /// Unsafe
+    
     pub unsafe fn free(&mut self, ptr: *mut (), bytes: usize) {
         if let Some(size_class) = SizeMap.get_size_class(bytes) {
             let shuffle_vectors = self
