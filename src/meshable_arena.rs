@@ -4,9 +4,10 @@ use crate::comparatomic::Comparatomic;
 use crate::one_way_mmap_heap::OneWayMmapHeap;
 use crate::span::{Length, Offset, Span, SpanList};
 use crate::{
+    fake_std::dynarray::DynArray,
     cheap_heap::CheapHeap,
-    flags::Flags,
     mini_heap::{MiniHeap, MiniHeapId},
+    flags::Flags,
     one_way_mmap_heap::Heap,
     ARENA_SIZE, DEFAULT_MAX_MESH_COUNT, DIRTY_PAGE_THRESHOLD, MIN_ARENA_EXPANSION, PAGE_SIZE,
     SPAN_CLASS_COUNT,
@@ -35,7 +36,7 @@ pub struct MeshableArena {
     dirty: *mut SpanList<256, SPAN_CLASS_COUNT>,
     clean: *mut SpanList<256, SPAN_CLASS_COUNT>,
     pub freed_spans: *mut SpanList<256, SPAN_CLASS_COUNT>,
-    pub mini_heaps: *mut *mut (),
+    pub mini_heaps: DynArray<MiniHeap, NUM_BINS>, 
     pub(crate) mh_allocator: *mut (),
     meshed_bitmap: *mut Bitmap<RelaxedBitmapBase<{ ARENA_SIZE / PAGE_SIZE }>>,
     fork_pipe: [i32; 2],
@@ -52,9 +53,6 @@ impl MeshableArena {
         // TODO: check if meshing enabled
         let fd = open_shm_span_file(ARENA_SIZE);
         let mut mh_allocator: CheapHeap<8, { ARENA_SIZE / PAGE_SIZE }> = CheapHeap::new();
-
-        let heaps = unsafe { OneWayMmapHeap.malloc(NUM_BINS * core::mem::size_of::<MiniHeap>()) }
-            as *mut *mut ();
         Self {
             arena_begin: null_mut(),
             fd,
@@ -63,7 +61,7 @@ impl MeshableArena {
             clean: SpanList::alloc_new(),
             freed_spans: SpanList::alloc_new(),
             mh_allocator: &mh_allocator as *const _ as *mut _,
-            mini_heaps: heaps.cast(),
+            mini_heaps: DynArray::<MiniHeap, NUM_BINS>::create(), 
             meshed_bitmap: Bitmap::alloc_new(),
             fork_pipe: [-1, -1],
             mini_heap_count: 0,
@@ -239,56 +237,43 @@ impl MeshableArena {
         Some(span)
     }
 
-    pub fn set_max_mesh_count(&mut self, max_mesh_count: usize) {
-        self.max_mesh_count = max_mesh_count;
-    }
     ///# Safety
     /// Unsafe
     /// 
-    pub unsafe fn get_new_mini_heap(&mut self, alloc: *mut (), bytes: usize) -> *mut () {
-        let mh_slice = core::ptr::slice_from_raw_parts_mut(self.mini_heaps, NUM_BINS)
-            as *mut [MiniHeap; NUM_BINS];
-        let mini_heaps = mh_slice.as_mut().unwrap();
+    pub unsafe fn generate_mini_heap(&mut self, alloc: *mut (), bytes: usize) -> *mut MiniHeap {
+        let mini_heaps = self.mini_heaps.as_mut_slice().as_mut().unwrap();
         let empty = mini_heaps.iter().position(|x| {
-            let heap = x as *const MiniHeap;
-            core::mem::transmute::<_, Option<MiniHeap>>(heap.read()).is_none()
+            let heap = *x as *const MaybeUninit<MiniHeap>;
+            core::mem::transmute::<_, &Option<MiniHeap>>(heap).is_none()
         });
 
         let new_heap = MiniHeap::new(alloc, Span::default(), bytes);
         match empty {
+
             Some(pos) => {
-                mini_heaps[pos] = new_heap;
-                self.mini_heaps.add(pos).cast()
-            }
+                mini_heaps[pos].write(new_heap);
+                self.mini_heaps.inner().add(pos)
+            },
 
-            None if {
-                let slice = mh_slice.cast::<MiniHeap>();
-                let flags = core::mem::transmute::<_, Option<Flags>>(slice);
-                flags.is_none()
-            } =>
-            {
-                mini_heaps[0] = new_heap;
-                self.mini_heaps.cast()
-            }
-
-            _ => {
-                todo!()
-            }
+            None => {
+                mini_heaps[0].write(new_heap);
+                self.mini_heaps.get(0)
+                    
         }
+    }
     }
     ///# Safety
     /// Unsafe
-    pub unsafe fn get_mini_heap(&self, ptr: *mut ()) -> Option<*mut MiniHeap> {
-        let mini_heaps = core::ptr::slice_from_raw_parts(
-            self.mini_heaps as *mut *mut MiniHeap,
-            self.mini_heap_count,
-        ) as *const [MiniHeap; NUM_BINS];
+        pub unsafe fn get_mini_heap(&self, ptr: *mut ()) -> Option<*mut MiniHeap> {
+        let mini_heaps = self.mini_heaps.as_slice();
 
         mini_heaps
             .as_ref()
             .unwrap()
             .iter()
-            .find(|mh| !mh.arena_begin.is_null() && mh.arena_begin == ptr.cast())
+            .find(|&&mh| {
+                mh.as_mut().unwrap().arena_begin == ptr.cast()
+            })
             .map(|x| x as *const _ as *mut MiniHeap)
     }
 

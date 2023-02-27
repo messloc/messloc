@@ -112,7 +112,7 @@ impl GlobalHeap {
                         let allocator = s.malloc() as *mut ();
                         if allocator.is_null() {
                             let alloc = unsafe { OneWayMmapHeap.malloc(bytes) as *mut () };
-                            unsafe { self.arena.get_new_mini_heap(alloc, bytes) };
+                            unsafe { self.arena.generate_mini_heap(alloc, bytes) };
                             if self.arena.arena_begin.is_null() {
                                 self.arena.arena_begin = alloc;
                             }
@@ -122,7 +122,8 @@ impl GlobalHeap {
                         }
                     } else {
                         let alloced = unsafe { self.alloc_page_aligned(0, 1) as *mut MiniHeap };
-                        unsafe { self.arena.get_new_mini_heap(alloced.cast(), bytes) }
+                        //TODO:: this should return the memory pointer not the miniheap
+                        unsafe { self.arena.generate_mini_heap(alloced.cast(), bytes).cast() }
                     }
                 }
                 _ => {

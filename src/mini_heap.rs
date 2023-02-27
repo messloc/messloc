@@ -15,6 +15,7 @@ use crate::{
     class_array::CLASS_ARRAY,
     comparatomic::Comparatomic,
     flags::{size_class, Flags, FreeListId},
+    fake_std::Initer,
     list_entry::{ListEntry, Listable},
     meshable_arena::{Page, PageType},
     one_way_mmap_heap::Heap,
@@ -309,6 +310,13 @@ impl PartialEq for MiniHeap {
             && self.span == other.span
             && self.flags == other.flags
             && self.current == other.current
+    }
+}
+
+
+impl Initer for MiniHeap {
+    fn init() -> MaybeUninit<Self> {
+        MaybeUninit::uninit() 
     }
 }
 
