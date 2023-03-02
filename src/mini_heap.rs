@@ -14,8 +14,8 @@ use crate::{
     bitmap::{AtomicBitmapBase, Bitmap, BitmapBase, RelaxedBitmapBase},
     class_array::CLASS_ARRAY,
     comparatomic::Comparatomic,
-    flags::{size_class, Flags, FreeListId},
     fake_std::Initer,
+    flags::{size_class, Flags, FreeListId},
     list_entry::{ListEntry, Listable},
     meshable_arena::{Page, PageType},
     one_way_mmap_heap::Heap,
@@ -313,10 +313,9 @@ impl PartialEq for MiniHeap {
     }
 }
 
-
 impl Initer for MiniHeap {
     fn init() -> MaybeUninit<Self> {
-        MaybeUninit::uninit() 
+        MaybeUninit::uninit()
     }
 }
 

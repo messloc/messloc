@@ -1,15 +1,14 @@
 pub mod dynarray;
 
+use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 use core::slice;
 use core::{marker::PhantomData, ptr::NonNull, sync::atomic::AtomicUsize};
-use core::mem::MaybeUninit;
 use std::io::Write;
 use std::ptr::addr_of;
 
-use crate::one_way_mmap_heap::{OneWayMmapHeap, Heap};
+use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 use crate::utils::strcat;
-
 
 pub struct Arc<T: ?Sized> {
     ptr: NonNull<ArcInner<T>>,
@@ -131,8 +130,6 @@ impl Deref for String {
     }
 }
 
-pub trait Initer : Sized {
+pub trait Initer: Sized {
     fn init() -> MaybeUninit<Self>;
-
 }
-

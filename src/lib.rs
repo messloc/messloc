@@ -19,6 +19,7 @@
 #![feature(ptr_as_uninit)]
 #![feature(if_let_guard)]
 #![recursion_limit = "256"]
+#![deny(clippy::pedantic)]
 
 use core::{
     alloc::{AllocError, Allocator, GlobalAlloc, Layout},
@@ -37,8 +38,8 @@ mod bitmap;
 mod cheap_heap;
 mod class_array;
 mod comparatomic;
-mod flags;
 mod fake_std;
+mod flags;
 pub mod global_heap;
 mod list_entry;
 pub mod meshable_arena;

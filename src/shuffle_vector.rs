@@ -238,6 +238,7 @@ pub struct Entry {
 }
 
 impl Entry {
+    #[must_use]
     pub const fn new(mh_offset: usize, bit_offset: usize) -> Self {
         Self {
             mh_offset,

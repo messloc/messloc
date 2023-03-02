@@ -102,7 +102,6 @@ impl GlobalHeap {
                 .as_mut()
                 .unwrap()
             };
-
             match shuffle_vector.get_mut(size_class) {
                 Some(s) => {
                     if !s.start.is_null() {
@@ -137,7 +136,7 @@ impl GlobalHeap {
 
     ///# Safety
     /// Unsafe
-    
+
     pub unsafe fn free(&mut self, ptr: *mut (), bytes: usize) {
         if let Some(size_class) = SizeMap.get_size_class(bytes) {
             let shuffle_vectors = self
@@ -907,7 +906,6 @@ impl GlobalHeap {
         self.stats.alloc_count.fetch_add(1, Ordering::AcqRel);
         let count = self.mini_heap_count.load(Ordering::Acquire);
         self.stats.high_water_mark.store(count, Ordering::Release);
-
         buf
     }
 }
