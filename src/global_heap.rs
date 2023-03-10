@@ -120,7 +120,7 @@ impl GlobalHeap {
                             allocator
                         }
                     } else {
-                        let alloced = unsafe { self.alloc_page_aligned(0, 1) as *mut MiniHeap };
+                        let alloced = unsafe { self.alloc_page_aligned(0, 1) as *mut () };
                         //TODO:: this should return the memory pointer not the miniheap
                         unsafe { self.arena.generate_mini_heap(alloced.cast(), bytes).cast() }
                     }
@@ -889,15 +889,17 @@ impl GlobalHeap {
     fn alloc_miniheap(&mut self, page_count: usize, page_align: usize) -> *mut MiniHeap {
         debug_assert!(page_count > 0, "should allocate at least 1 page");
 
-        let buf = unsafe { OneWayMmapHeap.malloc(PAGE_SIZE) } as *mut MiniHeap;
+        let page = unsafe { OneWayMmapHeap.malloc(PAGE_SIZE) } as *mut ();
 
+        let buf =
+            unsafe { OneWayMmapHeap.malloc(core::mem::size_of::<MiniHeap>()) } as *mut MiniHeap;
         // allocate out of the arena
         // TODO: Check if we need this since it doesn't match the current lazy model
         // let (span, span_begin) = self.arena.page_alloc(page_count, page_align);
 
         //TODO: Adjust value of span by going through find_pages on the arena and the related code
         unsafe {
-            buf.write(MiniHeap::new(buf.cast(), Span::default(), PAGE_SIZE));
+            buf.write(MiniHeap::new(page, Span::default(), PAGE_SIZE));
         }
 
         // // mesh::debug("%p (%u) created!\n", mh, GetMiniHeapID(mh));

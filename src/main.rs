@@ -5,8 +5,12 @@ extern crate alloc;
 static ALLOCATOR: MessyLock = MessyLock(once_cell::sync::OnceCell::new());
 pub fn main() {}
 
-pub fn pfmain() {
-    let allocator = messloc::Messloc::init();
-    unsafe { allocator.allocate(std::alloc::Layout::from_size_align(5, 1).unwrap()) };
-    unsafe { allocator.allocate(std::alloc::Layout::from_size_align(48, 8).unwrap()) };
+#[cfg(test)]
+mod tests {
+    #[test]
+    pub fn pfmain() {
+        let allocator = messloc::Messloc::init();
+        unsafe { allocator.allocate(std::alloc::Layout::from_size_align(5, 1).unwrap()) };
+        unsafe { allocator.allocate(std::alloc::Layout::from_size_align(48, 8).unwrap()) };
+    }
 }

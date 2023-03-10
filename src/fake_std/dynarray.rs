@@ -28,12 +28,15 @@ impl<T: Initer, const N: usize> DynArray<T, N> {
         }
     }
 
-    pub unsafe fn as_slice(&self) -> *const [*mut T] {
-        core::ptr::slice_from_raw_parts(self.pointers.cast::<*mut T>(), N)
+    pub unsafe fn as_slice(&self) -> *const [*mut MaybeUninit<T>] {
+        core::ptr::slice_from_raw_parts(self.pointers.cast::<*mut MaybeUninit<T>>(), N)
     }
 
-    pub unsafe fn as_mut_slice(&mut self) -> *mut [*mut T] {
-        core::ptr::slice_from_raw_parts_mut(self.pointers.cast::<*mut T>(), N)
+    pub unsafe fn as_mut_slice(&mut self) -> *mut [*mut MaybeUninit<T>] {
+        let slice =
+            core::ptr::slice_from_raw_parts_mut(self.pointers.cast::<*mut MaybeUninit<T>>(), N);
+        let sl = slice.as_mut().unwrap();
+        slice
     }
 
     pub fn inner(&self) -> *mut T {

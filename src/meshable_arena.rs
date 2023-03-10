@@ -242,18 +242,27 @@ impl MeshableArena {
     ///
     pub unsafe fn generate_mini_heap(&mut self, alloc: *mut (), bytes: usize) -> *mut MiniHeap {
         let mini_heaps = self.mini_heaps.as_mut_slice().as_mut().unwrap();
-        let empty = mini_heaps.iter().position(|x| x.is_null());
-        let mut new_heap = MiniHeap::new(alloc, Span::default(), bytes);
+        let empty = mini_heaps.iter().position(|x| match x.as_mut() {
+            Some(mut mh) if mh.as_ptr().as_ref().unwrap().arena_begin.is_null() => true,
+            None => true,
+            _ => false,
+        });
+        let size = core::mem::size_of::<*mut MiniHeap>();
+        let new_heap = unsafe { OneWayMmapHeap.malloc(size) as *mut MaybeUninit<MiniHeap> };
+        new_heap.write(MaybeUninit::new(MiniHeap::new(
+            alloc,
+            Span::default(),
+            bytes,
+        )));
+
         match empty {
             Some(pos) => {
-                mini_heaps[pos].write(new_heap);
+                mini_heaps[pos].copy_from_nonoverlapping(new_heap, size);
                 self.mini_heaps.inner().add(pos)
             }
 
             None => {
-                core::mem::replace(&mut mini_heaps[0], &mut new_heap);
-                //mini_heaps[0].write(new_heap);
-                {}
+                core::ptr::copy_nonoverlapping(new_heap, mini_heaps[0], size);
                 self.mini_heaps.get(0)
             }
         }
@@ -267,8 +276,12 @@ impl MeshableArena {
             .as_ref()
             .unwrap()
             .iter()
-            .take_while(|x| !x.is_null())
-            .find(|&&mh| mh.as_mut().unwrap().arena_begin == ptr.cast())
+            .filter(|x| {
+                x.as_mut()
+                    .map(|x| !x.as_ptr().as_ref().unwrap().arena_begin.is_null())
+                    .is_some()
+            })
+            .find(|&&mh| mh.as_mut().unwrap().as_ptr().as_ref().unwrap().arena_begin == ptr.cast())
             .map(|x| x as *const _ as *mut MiniHeap)
     }
 

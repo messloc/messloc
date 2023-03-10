@@ -277,6 +277,12 @@ impl MiniHeap {
         self.flags.set_freelist_id(free_list);
     }
 }
+
+impl std::fmt::Debug for MiniHeap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        write!(f, "Miniheap debuggaa {:?}", self.arena_begin)
+    }
+}
 impl Heap for MiniHeap {
     type PointerType = *mut ();
     type MallocType = ();
@@ -320,7 +326,9 @@ impl Initer for MiniHeap {
 }
 
 impl Drop for MiniHeap {
-    fn drop(&mut self) {}
+    fn drop(&mut self) {
+        dbg!("mini heap going down");
+    }
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -411,5 +419,13 @@ mod tests {
 
             assert_eq!(mh.span, Span::default());
         }
+    }
+
+    #[test]
+    pub fn test_dyn_array_of_mini_heaps() {
+        let mut h = crate::fake_std::dynarray::DynArray::<MiniHeap, 32>::create();
+        let slice = unsafe { h.as_mut_slice() };
+
+        // unsafe { slice.as_mut().unwrap().iter().for_each(|mh| { dbg!(mh.read()); }) };
     }
 }
