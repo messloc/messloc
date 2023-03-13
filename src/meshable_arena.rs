@@ -13,7 +13,7 @@ use crate::{
     SPAN_CLASS_COUNT,
 };
 use crate::{for_each_meshed, NUM_BINS};
-use core::mem::{size_of, MaybeUninit};
+use core::mem::size_of;
 use core::ptr::addr_of_mut;
 use core::{
     ptr::null_mut,
@@ -242,28 +242,20 @@ impl MeshableArena {
     ///
     pub unsafe fn generate_mini_heap(&mut self, alloc: *mut (), bytes: usize) -> *mut MiniHeap {
         let mini_heaps = self.mini_heaps.as_mut_slice().as_mut().unwrap();
-        let empty = mini_heaps.iter().position(|x| match x.as_mut() {
-            Some(mut mh) if mh.as_ptr().as_ref().unwrap().arena_begin.is_null() => true,
-            None => true,
-            _ => false,
-        });
+        let empty = mini_heaps.iter().position(|x| x.is_none());
         let size = core::mem::size_of::<*mut MiniHeap>();
-        let new_heap = unsafe { OneWayMmapHeap.malloc(size) as *mut MaybeUninit<MiniHeap> };
-        new_heap.write(MaybeUninit::new(MiniHeap::new(
-            alloc,
-            Span::default(),
-            bytes,
-        )));
+        let new_heap = unsafe { OneWayMmapHeap.malloc(size) as *mut MiniHeap };
+        new_heap.write(MiniHeap::new(alloc, Span::default(), bytes));
 
         match empty {
             Some(pos) => {
-                mini_heaps[pos].copy_from_nonoverlapping(new_heap, size);
-                self.mini_heaps.inner().add(pos)
+                // mini_heaps[pos].write(None);
+                mini_heaps[pos] = Some(new_heap);
+                self.mini_heaps.inner().add(pos).cast()
             }
 
             None => {
-                core::ptr::copy_nonoverlapping(new_heap, mini_heaps[0], size);
-                self.mini_heaps.get(0)
+                todo!()
             }
         }
     }
@@ -276,12 +268,13 @@ impl MeshableArena {
             .as_ref()
             .unwrap()
             .iter()
-            .filter(|x| {
-                x.as_mut()
-                    .map(|x| !x.as_ptr().as_ref().unwrap().arena_begin.is_null())
-                    .is_some()
+            .find(|x| {
+                if let Some(y) = x && let Some(&mh) = x.as_ref() {
+                        mh.as_ref().unwrap().arena_begin == ptr.cast()
+                } else {
+                    false
+                }
             })
-            .find(|&&mh| mh.as_mut().unwrap().as_ptr().as_ref().unwrap().arena_begin == ptr.cast())
             .map(|x| x as *const _ as *mut MiniHeap)
     }
 

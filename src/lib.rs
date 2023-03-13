@@ -91,6 +91,7 @@ unsafe impl GlobalAlloc for Messloc {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         // SAFETY: `ptr` is guaranteed to point to valid memory allocated
         // by this allocator.
+
         self.deallocate(ptr, layout);
     }
 }

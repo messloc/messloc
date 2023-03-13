@@ -4,7 +4,7 @@ use core::mem::MaybeUninit;
 use core::ops::{Index, IndexMut};
 
 pub struct DynArray<T: Initer, const N: usize> {
-    pointers: *mut T,
+    pointers: *mut *mut T,
 }
 
 impl<T: Initer, const N: usize> DynArray<T, N> {
@@ -17,9 +17,9 @@ impl<T: Initer, const N: usize> DynArray<T, N> {
                 .unwrap()
         };
         (0..N).for_each(|n| {
-            let element =
-                unsafe { OneWayMmapHeap.malloc(core::mem::size_of::<T>()) } as *mut MaybeUninit<T>;
-            unsafe { element.write(T::init()) };
+            let element = unsafe { OneWayMmapHeap.malloc(core::mem::size_of::<Option<*mut T>>()) }
+                as *mut Option<T>;
+            unsafe { element.write(None) };
             pointer_slice[n] = element.cast();
         });
 
@@ -28,18 +28,15 @@ impl<T: Initer, const N: usize> DynArray<T, N> {
         }
     }
 
-    pub unsafe fn as_slice(&self) -> *const [*mut MaybeUninit<T>] {
-        core::ptr::slice_from_raw_parts(self.pointers.cast::<*mut MaybeUninit<T>>(), N)
+    pub unsafe fn as_slice(&self) -> *const [Option<*mut T>] {
+        core::ptr::slice_from_raw_parts(self.pointers.cast::<Option<*mut T>>(), N)
     }
 
-    pub unsafe fn as_mut_slice(&mut self) -> *mut [*mut MaybeUninit<T>] {
-        let slice =
-            core::ptr::slice_from_raw_parts_mut(self.pointers.cast::<*mut MaybeUninit<T>>(), N);
-        let sl = slice.as_mut().unwrap();
-        slice
+    pub unsafe fn as_mut_slice(&mut self) -> *mut [Option<*mut T>] {
+        core::ptr::slice_from_raw_parts_mut(self.pointers.cast::<Option<*mut T>>(), N)
     }
 
-    pub fn inner(&self) -> *mut T {
+    pub fn inner(&self) -> *mut *mut T {
         self.pointers
     }
 

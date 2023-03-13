@@ -10,7 +10,7 @@ mod tests {
     #[test]
     pub fn pfmain() {
         let allocator = messloc::Messloc::init();
-        unsafe { allocator.allocate(std::alloc::Layout::from_size_align(5, 1).unwrap()) };
         unsafe { allocator.allocate(std::alloc::Layout::from_size_align(48, 8).unwrap()) };
+        unsafe { allocator.allocate(std::alloc::Layout::from_size_align(1, 1).unwrap()) };
     }
 }
