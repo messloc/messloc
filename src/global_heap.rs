@@ -17,6 +17,7 @@ use crate::{
     cheap_heap::CheapHeap,
     class_array::CLASS_ARRAY,
     comparatomic::Comparatomic,
+    fake_std::dynarray::DynArray,
     flags::FreeListId,
     for_each_meshed,
     list_entry::ListEntry,
@@ -44,7 +45,7 @@ pub struct GlobalHeapStats {
 
 pub struct GlobalHeap {
     pub arena: MeshableArena,
-    pub shuffle_vector: *mut (),
+    pub shuffle_vector: DynArray<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>, NUM_BINS>,
     pub free_lists: *mut FreeList,
     pub merge_set: *mut (),
     pub mesh_epoch: Epoch,
@@ -66,18 +67,12 @@ const fn page_count(bytes: usize) -> usize {
 impl GlobalHeap {
     pub fn init() -> Self {
         let size = core::mem::size_of::<[ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS]>();
-        let sv =
-            unsafe { OneWayMmapHeap.malloc(size) } as *mut ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>;
-        (0..NUM_BINS).for_each(|bin| {
-            let s = unsafe { sv.add(bin) };
-            unsafe { s.write(ShuffleVector::new()) };
-        });
 
         let arena = MeshableArena::init();
         let merge_set = MergeSetWithSplits::<MAX_SPLIT_LIST_SIZE>::alloc_new();
         Self {
             arena,
-            shuffle_vector: sv as *const _ as *mut (),
+            shuffle_vector: DynArray::create(),
             free_lists: FreeList::alloc_new(),
             merge_set,
             mesh_epoch: Epoch::default(),
@@ -93,22 +88,14 @@ impl GlobalHeap {
     /// Allocate a region of memory that can satisfy the requested bytes
     pub fn malloc(&mut self, bytes: usize) -> *const () {
         if let Some(size_class) = SizeMap.get_size_class(bytes) {
-            let shuffle_vector = unsafe {
-                core::ptr::slice_from_raw_parts_mut(
-                    self.shuffle_vector
-                        .cast::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>(),
-                    NUM_BINS,
-                )
-                .as_mut()
-                .unwrap()
-            };
-            match shuffle_vector.get_mut(size_class) {
+            match unsafe { self.shuffle_vector.get(size_class) } {
                 Some(s) => {
-                    if !s.start.is_null() {
-                        if s.is_exhausted_and_no_refill() {
+                    let sv = unsafe { s.as_mut().unwrap().unwrap().as_mut().unwrap() };
+                    if !sv.start.is_null() {
+                        if sv.is_exhausted_and_no_refill() {
                             self.small_alloc_global_refill(size_class);
                         }
-                        let allocator = s.malloc() as *mut ();
+                        let allocator = sv.malloc() as *mut ();
                         if allocator.is_null() {
                             let alloc = unsafe { OneWayMmapHeap.malloc(bytes) as *mut () };
                             unsafe { self.arena.generate_mini_heap(alloc, bytes) };
@@ -139,35 +126,20 @@ impl GlobalHeap {
 
     pub unsafe fn free(&mut self, ptr: *mut (), bytes: usize) {
         if let Some(size_class) = SizeMap.get_size_class(bytes) {
-            let shuffle_vectors = self
-                .shuffle_vector
-                .cast::<[ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>; NUM_BINS]>()
-                .as_mut()
-                .unwrap();
+            let shuffle_vectors = self.shuffle_vector.as_mut_slice().as_mut().unwrap();
             let mh = self.arena.get_mini_heap(ptr).unwrap();
-            match shuffle_vectors.get_mut(size_class) {
-                Some(sv) if sv.mini_heaps.is_null() => {
-                    let size =
-                        core::mem::size_of::<[*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR]>();
-                    let mini_heaps = OneWayMmapHeap.malloc(size) as *mut *mut MiniHeap;
-                    mini_heaps.write(mh);
-                }
-                Some(sv) => {
-                    let mini_heaps = core::ptr::slice_from_raw_parts_mut(
-                        sv.mini_heaps,
-                        MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR,
-                    )
-                        as *mut [*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR];
+            match shuffle_vectors.get(size_class) {
+                Some(Some(sv)) if let Some(v) = sv.as_mut() => {
+                    let mini_heaps = v.mini_heaps.as_mut_slice().as_mut().unwrap();
+                    let pos = mini_heaps.iter().position(|mh| mh.is_none()).unwrap();
 
-                    let mini_heaps = mini_heaps.as_mut().unwrap();
-                    let pos = mini_heaps.iter().position(|mh| mh.is_null()).unwrap();
-
-                    core::mem::replace(&mut mini_heaps[pos], mh);
+                    core::mem::replace(&mut mini_heaps[pos], Some(mh));
                 }
                 _ => {}
             }
+        } else {
+            dbg!("oh no you called this");
         }
-
         /*
         match shuffle_vectors.get_mut(size_class) {
             Some(v) => {
@@ -429,24 +401,21 @@ impl GlobalHeap {
 
     pub fn small_alloc_mini_heaps(&mut self, size_class: usize, object_size: usize, current: u64) {
         (0..NUM_BINS).for_each(|bin| unsafe {
-            let vector = self
+            match self
                 .shuffle_vector
-                .cast::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>()
-                .add(bin);
-            let mini_heaps = &vector
-                .cast::<ShuffleVector<MAX_SHUFFLE_VECTOR_LENGTH>>()
-                .as_mut()
-                .unwrap()
-                .mini_heaps
-                .cast::<[*mut MiniHeap; MAX_SHUFFLE_VECTOR_LENGTH]>()
-                .as_mut()
-                .unwrap();
-            mini_heaps.iter().for_each(|mini_heap| {
-                let mini_heap = unsafe { mini_heap.as_mut().unwrap() };
+                .get(bin) {
+                    Some(vector) if let Some(v) = vector.as_mut() && let Some(sv) = v.as_mut() && let Some(sv) = sv.as_mut() => {
+                        let mini_heaps = sv.mini_heaps.as_mut_slice().as_mut().unwrap();
+
+                mini_heaps.iter().filter_map(|x| *x).for_each(|mini_heap| {
+                let mini_heap = mini_heap.as_mut().unwrap();
                 mini_heap.unset_attached();
                 self.post_free_locked(mini_heap, mini_heap.in_use_count());
             });
-        });
+                    },
+
+                    _ => unreachable!(),
+                }});
         assert!(size_class < NUM_BINS);
 
         let (mut mini_heaps, mut bytes_free) = self.select_for_reuse(size_class, current);

@@ -7,6 +7,7 @@ use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 use crate::{
     bitmap::{AtomicBitmapBase, Bitmap},
     comparatomic::Comparatomic,
+    fake_std::dynarray::DynArray,
     mini_heap::MiniHeap,
     rng::Rng,
 };
@@ -15,7 +16,7 @@ use crate::{ENABLED_SHUFFLE_ON_INIT, MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR};
 pub struct ShuffleVector<const N: usize> {
     pub start: *mut (),
     array: *mut (),
-    pub mini_heaps: *mut *mut (),
+    pub mini_heaps: DynArray<MiniHeap, MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR>,
     pub mini_heap_count: usize,
     rng: Rng,
     pub offset: Comparatomic<AtomicU64>,
@@ -28,7 +29,7 @@ impl<const N: usize> ShuffleVector<N> {
         Self {
             start: null_mut(),
             array: null_mut(),
-            mini_heaps: null_mut(),
+            mini_heaps: DynArray::create(),
             mini_heap_count: 0,
             rng: Rng::init(),
             offset: Comparatomic::new(0),
@@ -84,96 +85,37 @@ impl<const N: usize> ShuffleVector<N> {
     }
 
     pub fn insert(&mut self, heap: *mut MiniHeap) {
-        if self.mini_heaps.is_null() {
-            let mini_heaps = unsafe {
-                OneWayMmapHeap.malloc(core::mem::size_of::<
-                    [*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR],
-                >())
-            };
-            let mh_slice = unsafe {
-                core::ptr::slice_from_raw_parts_mut(
-                    mini_heaps.cast::<*mut MiniHeap>(),
-                    MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR,
-                )
-            } as *mut [*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR];
-            unsafe { mh_slice.as_mut().unwrap()[0] = heap };
-        } else {
-            let mini_heaps = unsafe {
-                core::ptr::slice_from_raw_parts_mut(
-                    self.mini_heaps.cast::<*mut MiniHeap>(),
-                    MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR,
-                )
-                .as_mut()
-                .unwrap()
-            };
-
-            match mini_heaps.iter_mut().enumerate().find(|(i, h)| h.is_null()) {
-                Some((i, h)) => {
-                    *h = heap;
-                }
-                None => {
-                    unreachable!()
-                }
-            };
-            self.offset.fetch_add(1, Ordering::AcqRel);
+        let mini_heaps = unsafe { self.mini_heaps.as_mut_slice().as_mut().unwrap() };
+        let mini_heap = mini_heaps.iter().position(|x| x.is_none());
+        match mini_heap {
+            Some(n) => mini_heaps[n] = Some(heap),
+            None => unreachable!(),
         }
     }
 
     pub fn local_refill(&mut self) -> bool {
         let mut added_capacity = 0usize;
 
-        if self.mini_heaps.is_null() {
-            false
-        } else {
-            loop {
-                let offset = self.attached_offset.load(Ordering::Acquire) as usize;
+        let mini_heaps = unsafe { self.mini_heaps.as_mut_slice().as_mut().unwrap() };
 
-                let mut mh = unsafe {
-                    let heap = self
-                        .mini_heaps
-                        .cast::<[*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR]>()
-                        .add(offset) as *mut MiniHeap;
-                    heap.as_mut().unwrap()
-                };
-
-                if mh.is_full() {
-                    continue;
-                }
-
-                let alloc_count = self.refill_from(
-                    self.attached_offset.load(Ordering::Acquire) as usize,
-                    &mut mh.bitmap,
-                );
-                added_capacity |= alloc_count;
-                self.attached_offset.fetch_add(1, Ordering::AcqRel);
-            }
-
-            if added_capacity > 0 {
-                if ENABLED_SHUFFLE_ON_INIT {
-                    self.rng.shuffle(
-                        self.array as *mut [Entry; N],
-                        self.offset.load(Ordering::Acquire) as usize,
-                        N,
-                    );
-                }
-                true
-            } else {
-                false
-            }
-        }
+        mini_heaps
+            .iter()
+            .position(|x| x.is_none())
+            .map(|x| self.rng.shuffle(self.array as *mut [Entry; N], x, N))
+            .is_some()
     }
 
     pub fn refill_mini_heaps(&mut self) {
         while self.offset.load(Ordering::Acquire) < N as u64 {
             let mut entry = self.pop();
-            let mut mh = unsafe {
-                self.mini_heaps
-                    .cast::<[*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR]>()
-                    .add(entry.mh_offset) as *mut MiniHeap
-            };
-
+            let mh = unsafe { self.mini_heaps.get(entry.mh_offset).unwrap() };
             unsafe {
-                mh.as_mut().unwrap().free_offset(entry.bit_offset);
+                mh.as_mut()
+                    .unwrap()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .free_offset(entry.bit_offset);
             }
         }
     }
@@ -197,24 +139,6 @@ impl<const N: usize> ShuffleVector<N> {
 
         self.offset.fetch_add(1, Ordering::AcqRel);
         val
-    }
-
-    pub fn re_init(&mut self) {
-        self.offset.store(N as u64, Ordering::Acquire);
-        self.attached_offset.store(0, Ordering::AcqRel);
-        let mini_heaps = unsafe {
-            self.mini_heaps
-                .cast::<[*mut MiniHeap; MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR]>()
-                .as_mut()
-                .unwrap()
-        };
-        let len = mini_heaps.len();
-        self.rng.shuffle(mini_heaps, 0, len);
-
-        mini_heaps.iter().enumerate().for_each(|(i, mut mh)| {
-            let mh = unsafe { mh.as_mut().unwrap() };
-            mh.set_sv_offset(i);
-        });
     }
 
     pub fn ptr_from_offset(&self, offset: &Entry) -> *mut MiniHeap {

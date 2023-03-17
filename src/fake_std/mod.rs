@@ -1,6 +1,5 @@
 pub mod dynarray;
 
-use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 use core::slice;
 use core::{marker::PhantomData, ptr::NonNull, sync::atomic::AtomicUsize};
@@ -128,8 +127,4 @@ impl Deref for String {
         let slice = unsafe { slice::from_raw_parts_mut(self.vec, self.len) };
         unsafe { core::str::from_utf8_unchecked(slice) }
     }
-}
-
-pub trait Initer: Sized {
-    fn init() -> MaybeUninit<Self>;
 }

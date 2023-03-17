@@ -249,7 +249,6 @@ impl MeshableArena {
 
         match empty {
             Some(pos) => {
-                // mini_heaps[pos].write(None);
                 mini_heaps[pos] = Some(new_heap);
                 self.mini_heaps.inner().add(pos).cast()
             }
