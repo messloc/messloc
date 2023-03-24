@@ -14,9 +14,3 @@ messloc is a drop in replacement for malloc that can transparently recover from 
  - [ ] Windows (WIP)
 - BSD-based Operating systems <br />
 *not tested, please open an issue*
-
-# Crates
-messloc uses the following crates: <br /> 
-`arrayvec` for vectors with fixed capacity <br />
-`libc` for Raw FFI bindings to platform libraries like libc. <br />
-
