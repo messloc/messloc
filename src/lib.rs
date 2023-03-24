@@ -85,7 +85,6 @@ const MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR: usize = 24;
 
 unsafe impl GlobalAlloc for Messloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        dbg!("allocating");
         self.allocate(layout)
     }
 
@@ -93,7 +92,6 @@ unsafe impl GlobalAlloc for Messloc {
         // SAFETY: `ptr` is guaranteed to point to valid memory allocated
         // by this allocator.
 
-        dbg!("allocating done");
         self.deallocate(ptr, layout);
     }
 }
@@ -113,12 +111,10 @@ unsafe impl GlobalAlloc for MessyLock {
             self.init_in_place();
         }
         let ptr = OnceCell::get(&self.0).unwrap().allocate(layout);
-        dbg!("allocating done");
         ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        dbg!("deällocating");
         if let Some(lazy) = once_cell::sync::OnceCell::get(&self.0) {
             lazy.deallocate(ptr, layout);
         } else {

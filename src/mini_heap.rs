@@ -418,11 +418,5 @@ mod tests {
     pub fn test_dyn_array_of_mini_heaps() {
         let mut h = crate::fake_std::dynarray::DynArray::<MiniHeap, 32>::create();
         let slice = unsafe { h.as_mut_slice() };
-
-        unsafe {
-            slice.as_mut().unwrap().iter().for_each(|mh| {
-                dbg!(mh.read());
-            })
-        };
     }
 }

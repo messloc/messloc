@@ -108,18 +108,18 @@ impl<const N: usize> ShuffleVector<N> {
     pub fn refill_mini_heaps(&mut self) {
         while self.offset.load(Ordering::Acquire) < N as u64 {
             let mut entry = self.pop();
-            let mh = unsafe { self.mini_heaps.get(entry.mh_offset).unwrap() };
-            unsafe {
-                mh.as_mut()
-                    .unwrap()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .free_offset(entry.bit_offset);
+            let mh = self.mini_heaps.get(entry.mh_offset);
+            match mh {
+                Some(Some(mh)) => unsafe {
+                    mh.as_mut().unwrap().free_offset(entry.bit_offset);
+                },
+                Some(None) => {
+                    todo!()
+                }
+                _ => unreachable!(),
             }
         }
     }
-
     pub fn malloc(&self) -> *mut MiniHeap {
         if !self.array.is_null() {
             let entry = self.pop();
