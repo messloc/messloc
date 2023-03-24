@@ -1,15 +1,15 @@
 [package]
 name = "messloc"
-version = "0.0.0"
+version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Port of Mesh Allocator"
+description = "A shuffle-based allocator"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-rust-version = "1.64.0"
+rust-version = "1.68.0"
 
 [dependencies]
 arrayvec = "0.7"
-libc = "0.2.126"
+libc = "0.2.140"
 rand_xoshiro = "0.6"
 memmap2 = "0.5.7"
 spin = { version = "0.9.4", features = ["mutex"] }
