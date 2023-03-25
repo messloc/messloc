@@ -1,8 +1,8 @@
 use crate::PAGE_SIZE;
+use core::ptr::slice_from_raw_parts_mut;
 use core::{alloc::Allocator, ptr::null_mut, ptr::NonNull};
 use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_READ, PROT_WRITE};
 use once_cell::race::OnceNonZeroUsize;
-use std::ptr::slice_from_raw_parts_mut;
 
 pub trait Heap {
     type PointerType;

@@ -9,6 +9,7 @@ use core::{
     time::Duration,
 };
 
+use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use spin::{Mutex, MutexGuard};
 

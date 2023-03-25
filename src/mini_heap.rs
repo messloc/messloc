@@ -277,8 +277,8 @@ impl MiniHeap {
     }
 }
 
-impl std::fmt::Debug for MiniHeap {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+impl core::fmt::Debug for MiniHeap {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> Result<(), core::fmt::Error> {
         write!(f, "Miniheap debuggaa {:?}", self.arena_begin)
     }
 }

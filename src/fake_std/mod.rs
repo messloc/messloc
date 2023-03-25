@@ -1,10 +1,9 @@
 pub mod dynarray;
 
 use core::ops::{Deref, DerefMut};
+use core::ptr::addr_of;
 use core::slice;
 use core::{marker::PhantomData, ptr::NonNull, sync::atomic::AtomicUsize};
-use std::io::Write;
-use std::ptr::addr_of;
 
 use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
 use crate::utils::strcat;

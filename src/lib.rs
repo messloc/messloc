@@ -7,25 +7,21 @@
 #![allow(unused)]
 #![allow(clippy::needless_for_each)]
 #![allow(clippy::module_name_repetitions)]
-#![feature(type_alias_impl_trait)]
+#![feature(allocator_api)]
 #![feature(let_chains)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(assert_matches)]
-#![feature(allocator_api)]
-#![feature(slice_ptr_len)]
-#![feature(ptr_metadata)]
-#![feature(set_ptr_value)]
-#![feature(ptr_as_uninit)]
 #![feature(if_let_guard)]
 #![recursion_limit = "256"]
 #![deny(clippy::pedantic)]
 
 use core::{
-    alloc::{AllocError, Allocator, GlobalAlloc, Layout},
+    alloc::{Allocator, GlobalAlloc, Layout},
     ptr::NonNull,
 };
 
+extern crate alloc;
 use once_cell::sync::OnceCell;
 
 pub use crate::runtime::Messloc;
