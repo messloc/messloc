@@ -1,6 +1,4 @@
-use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
-use core::mem::MaybeUninit;
-use core::ops::{Index, IndexMut};
+use crate::one_way_mmap_heap::OneWayMmapHeap;
 
 pub struct DynArray<T, const N: usize> {
     pointers: *mut *mut T,
@@ -32,9 +30,7 @@ impl<T, const N: usize> DynArray<T, N> {
 
     pub fn get(&self, index: usize) -> Option<Option<*mut T>> {
         if index <= N {
-            let pointers = unsafe {
-                core::ptr::slice_from_raw_parts_mut(self.pointers, N) as *mut [Option<*mut T>; N]
-            };
+            let pointers = core::ptr::slice_from_raw_parts_mut(self.pointers, N) as *mut [Option<*mut T>; N];
             let pointers = unsafe { pointers.as_mut().unwrap() };
             Some(pointers[index])
         } else {

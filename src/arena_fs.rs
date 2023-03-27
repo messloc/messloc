@@ -1,6 +1,8 @@
+#![allow(unused)]
+
 use crate::fake_std::{String, ToString};
 use crate::{
-    one_way_mmap_heap::{Heap, OneWayMmapHeap},
+    one_way_mmap_heap::OneWayMmapHeap,
     utils::{fcntl, ftruncate, get_pid, make_dir_if_not_exists, mkdir, mkstemp, unlink},
 };
 use core::mem::size_of_val;

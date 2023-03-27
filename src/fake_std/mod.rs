@@ -1,61 +1,9 @@
 pub mod dynarray;
 
-use core::ops::{Deref, DerefMut};
-use core::ptr::addr_of;
-use core::slice;
-use core::{marker::PhantomData, ptr::NonNull, sync::atomic::AtomicUsize};
+use core::{slice, ops::Deref};
 
-use crate::one_way_mmap_heap::{Heap, OneWayMmapHeap};
+use crate::one_way_mmap_heap::OneWayMmapHeap;
 use crate::utils::strcat;
-
-pub struct Arc<T: ?Sized> {
-    ptr: NonNull<ArcInner<T>>,
-    phantom: PhantomData<ArcInner<T>>,
-}
-
-pub struct ArcInner<T: ?Sized> {
-    strong: AtomicUsize,
-    weak: AtomicUsize,
-    data: T,
-}
-
-impl<T> Arc<T> {
-    pub fn new(data: T) -> Arc<T> {
-        unsafe {
-            let kasten = OneWayMmapHeap.malloc(core::mem::size_of::<Self>()) as *mut ArcInner<T>;
-
-            kasten.write(ArcInner {
-                strong: AtomicUsize::new(1),
-                weak: AtomicUsize::new(1),
-                data,
-            });
-
-            Arc {
-                ptr: NonNull::new_unchecked(kasten),
-                phantom: PhantomData,
-            }
-        }
-    }
-
-    pub fn inner(&self) -> &ArcInner<T> {
-        unsafe { self.ptr.as_ref() }
-    }
-}
-
-impl<T> Deref for Arc<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner().data
-    }
-}
-
-unsafe impl<T: ?Sized + Sync + Send> Send for Arc<T> {}
-unsafe impl<T: ?Sized + Sync + Send> Sync for Arc<T> {}
-
-impl<T: ?Sized> Drop for Arc<T> {
-    fn drop(&mut self) {}
-}
 
 pub struct String {
     vec: *mut u8,
@@ -67,17 +15,9 @@ impl String {
         String { vec: data, len }
     }
 
-    pub fn from(data: &str) -> Self {
-        String::new(data.as_ptr() as *mut u8, data.len())
-    }
-
-    pub fn as_str(&self) -> &str {
-        self
-    }
-
     pub fn push_parts(&mut self, parts: &[&str]) -> Self {
-        let mut dest = self.vec as *mut libc::c_char;
-        let vec = parts.iter().fold(dest, |dest, mut part| {
+        let dest = self.vec as *mut libc::c_char;
+        let vec = parts.iter().fold(dest, |dest, part| {
             let catted =
                 unsafe { strcat(dest, part.as_bytes() as *const _ as *mut i8, self.len()) };
             self.len += part.len();

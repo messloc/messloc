@@ -1,25 +1,10 @@
 use crate::PAGE_SIZE;
-use core::ptr::slice_from_raw_parts_mut;
-use core::{alloc::Allocator, ptr::null_mut, ptr::NonNull};
+use core::ptr::null_mut;
 use libc::{mmap, MAP_ANONYMOUS, MAP_FAILED, MAP_NORESERVE, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-use once_cell::race::OnceNonZeroUsize;
-
-pub trait Heap {
-    type PointerType;
-    type MallocType;
-    unsafe fn map(&mut self, size: usize, flags: libc::c_int, fd: libc::c_int)
-        -> Self::PointerType;
-    unsafe fn malloc(&mut self, size: usize) -> *mut Self::MallocType;
-    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T;
-    unsafe fn get_size(&mut self, ptr: *mut ()) -> usize;
-    unsafe fn free(&mut self, ptr: *mut ());
-}
 
 pub struct OneWayMmapHeap;
 
-impl Heap for OneWayMmapHeap {
-    type PointerType = *mut ();
-    type MallocType = ();
+impl OneWayMmapHeap {
     unsafe fn map(&mut self, mut size: usize, flags: libc::c_int, fd: libc::c_int) -> *mut () {
         if size == 0 {
             return null_mut();
@@ -42,21 +27,10 @@ impl Heap for OneWayMmapHeap {
         ptr.cast()
     }
 
-    unsafe fn malloc(&mut self, size: usize) -> *mut () {
+    pub unsafe fn malloc(&mut self, size: usize) -> *mut () {
         self.map(size, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1)
     }
 
-    unsafe fn grow<T>(&mut self, src: *mut T, old: usize, new: usize) -> *mut T {
-        let alloc = self.malloc(new * core::mem::size_of::<T>()) as *mut T;
-        alloc.write(src.read());
-        alloc.cast()
-    }
-
-    unsafe fn get_size(&mut self, _: *mut ()) -> usize {
-        0
-    }
-
-    unsafe fn free(&mut self, _: *mut ()) {}
 }
 
 #[cfg(test)]

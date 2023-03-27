@@ -1,9 +1,11 @@
+#![allow(unused)]
+
 use core::ffi::c_int;
 use core::mem::MaybeUninit;
 use core::ptr::addr_of_mut;
 use libc::{
     c_char, c_void, pthread_attr_t, pthread_t, signalfd_siginfo, sigset_t, size_t,
-    FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, F_SETFD, MADV_DONTNEED, MAP_FIXED, MAP_SHARED,
+    FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, F_SETFD, MADV_DONTNEED,
     PROT_READ, PROT_WRITE, SIGRTMIN,
 };
 

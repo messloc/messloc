@@ -1,7 +1,3 @@
-use core::cell::RefCell;
-use core::num::{NonZeroU64, NonZeroUsize};
-use core::ops::{Range, RangeFrom, RangeFull, RangeInclusive};
-use spin::Mutex;
 
 use rand_xoshiro::rand_core::{RngCore, SeedableRng};
 use rand_xoshiro::Xoshiro256PlusPlus;
@@ -17,15 +13,16 @@ impl Rng {
         }
     }
 
+    //TODO:: rewriting shuffling logic
     pub fn shuffle<T, const N: usize>(
         &mut self,
         data: *mut [T; N],
-        mut start: usize,
-        mut end: usize,
+        start: usize,
+        end: usize,
     ) {
         unsafe {
             let mut start = data.add(start);
-            let end = start.add(end);
+            let mut end = start.add(end);
 
             while start != end {
                 start = start.add(1);
@@ -33,7 +30,7 @@ impl Rng {
                 if diff > 0 {
                     let item = self.in_range(diff as usize);
                     core::ptr::swap(start, end);
-                    end.sub(1);
+                    end = end.sub(1);
                 } else {
                     break;
                 }

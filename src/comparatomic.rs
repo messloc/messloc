@@ -151,7 +151,7 @@ impl<T> Atomic for AtomicPtr<T> {
         self.store(value, ordering);
     }
 
-    fn fetch_add(&self, value: Self::Innermost, ordering: Ordering) {
+    fn fetch_add(&self, _value: Self::Innermost, _ordering: Ordering) {
         unreachable!()
     }
 }
@@ -209,7 +209,7 @@ impl Atomic for AtomicBool {
         self.store(value, ordering);
     }
 
-    fn fetch_add(&self, value: Self::Innermost, ordering: Ordering) {
+    fn fetch_add(&self, _value: Self::Innermost, _ordering: Ordering) {
         // fetch_add is not applicable on atomic bool
         unreachable!()
     }

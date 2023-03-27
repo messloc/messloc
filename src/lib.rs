@@ -4,24 +4,20 @@
     // missing_debug_implementations,
     // missing_docs,
 )]
-#![allow(unused)]
 #![allow(clippy::needless_for_each)]
 #![allow(clippy::module_name_repetitions)]
 #![feature(allocator_api)]
 #![feature(let_chains)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
-#![feature(assert_matches)]
 #![feature(if_let_guard)]
 #![recursion_limit = "256"]
 #![deny(clippy::pedantic)]
 
 use core::{
-    alloc::{Allocator, GlobalAlloc, Layout},
-    ptr::NonNull,
+    alloc::{GlobalAlloc, Layout},
 };
 
-extern crate alloc;
 use once_cell::sync::OnceCell;
 
 pub use crate::runtime::Messloc;
@@ -30,53 +26,23 @@ pub use crate::runtime::Messloc;
 use core::alloc::{AllocError, Allocator};
 
 mod arena_fs;
-mod bitmap;
-mod cheap_heap;
 mod class_array;
 mod comparatomic;
 mod fake_std;
-mod flags;
-pub mod global_heap;
-mod list_entry;
-pub mod meshable_arena;
+mod global_heap;
+mod meshable_arena;
 mod mini_heap;
-mod mmap_heap;
 mod one_way_mmap_heap;
 mod rng;
 mod runtime;
-pub mod shuffle_vector;
-mod span;
-mod splits;
+mod shuffle_vector;
 mod utils;
 
-const DATA_LEN: usize = 128;
 const PAGE_SIZE: usize = 4096;
-#[cfg(target_os = "linux")]
-const ARENA_SIZE: usize = 64 * 512 * 1024 * 1024;
-// const ARENA_SIZE: usize = 64 * 1024 * 1024 * 1024; // 64 GB
-#[cfg(target_os = "macos")]
-const ARENA_SIZE: usize = 32 * 1024 * 1024 * 1024; // 32 GB
-
-const SPAN_CLASS_COUNT: usize = 256;
-const MIN_ARENA_EXPANSION: usize = 4096; // 16 MB in pages
 const MAX_SMALL_SIZE: usize = 1024;
 const MAX_SIZE: usize = 16384;
-const MAP_SHARED: i32 = 1;
-const DIRTY_PAGE_THRESHOLD: usize = 32;
-const MAX_MESHES: usize = 256;
-const MAX_MERGE_SETS: usize = 4096;
-const MAX_SPLIT_LIST_SIZE: usize = 1024;
 const NUM_BINS: usize = 25;
-const DEFAULT_MAX_MESH_COUNT: usize = 30000;
-const MAX_MESHES_PER_ITERATION: usize = 2500;
-const OCCUPANCY_CUTOFF: f64 = 0.8;
-const BINNED_TRACKER_MAX_EMPTY: u64 = 128;
-const MESHES_PER_MAP: f64 = 0.33;
 const MAX_SHUFFLE_VECTOR_LENGTH: usize = 64;
-const MIN_OBJECT_SIZE: usize = 8;
-const MINI_HEAP_REFILL_GOAL_SIZE: usize = 4 * 1024;
-const MIN_STRING_LEN: usize = 8;
-const ENABLED_SHUFFLE_ON_INIT: bool = true;
 const MAX_MINI_HEAPS_PER_SHUFFLE_VECTOR: usize = 24;
 
 unsafe impl GlobalAlloc for Messloc {
@@ -96,7 +62,7 @@ pub struct MessyLock(pub once_cell::sync::OnceCell<Messloc>);
 
 impl MessyLock {
     pub fn init_in_place(&self) {
-        OnceCell::set(&self.0, Messloc::init());
+        let _ = OnceCell::set(&self.0, Messloc::init());
         if OnceCell::get(&self.0).is_none() {}
     }
 }
