@@ -1,12 +1,6 @@
-use core::{
-    ptr::null_mut,
-    sync::atomic::AtomicU64,
-};
+use core::{ptr::null_mut, sync::atomic::AtomicU64};
 
-use crate::{
-    comparatomic::Comparatomic,
-    meshable_arena::Page,
-};
+use crate::{comparatomic::Comparatomic, meshable_arena::Page};
 
 pub struct MiniHeap {
     pub arena_begin: *mut Page,
@@ -24,7 +18,6 @@ impl MiniHeap {
             current: Comparatomic::new(0),
         }
     }
-
 }
 
 impl core::fmt::Debug for MiniHeap {

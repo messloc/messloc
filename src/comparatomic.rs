@@ -28,11 +28,11 @@ where
     }
 
     pub fn store(&self, value: T::Innermost, ordering: Ordering) {
-        self.0.store_value(value, ordering)
+        self.0.store_value(value, ordering);
     }
 
     pub fn fetch_add(&self, value: T::Innermost, ordering: Ordering) {
-        self.0.fetch_add(value, ordering)
+        self.0.fetch_add(value, ordering);
     }
 }
 

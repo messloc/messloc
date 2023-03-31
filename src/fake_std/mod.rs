@@ -1,6 +1,6 @@
 pub mod dynarray;
 
-use core::{slice, ops::Deref};
+use core::{ops::Deref, slice};
 
 use crate::one_way_mmap_heap::OneWayMmapHeap;
 use crate::utils::strcat;

@@ -16,13 +16,7 @@ impl OneWayMmapHeap {
         //TODO:: use utils::mmap instead as we are currently using two
         //different forms of mmap
         let ptr = mmap(null_mut(), size, PROT_READ | PROT_WRITE, flags, fd, 0);
-
-        if ptr == MAP_FAILED {
-            // we probably shouldn't panic in allocators
-            panic!()
-        }
-
-        // debug_assert_eq!(ptr.align_offset(Self::ALIGNMENT), 0);
+        assert!(ptr != MAP_FAILED);
 
         ptr.cast()
     }
@@ -30,7 +24,6 @@ impl OneWayMmapHeap {
     pub unsafe fn malloc(&mut self, size: usize) -> *mut () {
         self.map(size, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1)
     }
-
 }
 
 #[cfg(test)]

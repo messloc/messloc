@@ -72,9 +72,8 @@ fn open_span_dir() -> Option<String> {
                 return Some(String::new(p.cast(), path.len()));
             } else if count >= 1024 {
                 break;
-            } else {
-                count += 1;
             }
+            count += 1;
         }
     }
     None

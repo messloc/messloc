@@ -14,9 +14,7 @@
 #![recursion_limit = "256"]
 #![deny(clippy::pedantic)]
 
-use core::{
-    alloc::{GlobalAlloc, Layout},
-};
+use core::alloc::{GlobalAlloc, Layout};
 
 use once_cell::sync::OnceCell;
 

@@ -5,15 +5,9 @@ use core::{
 };
 
 use crate::{
-    class_array::CLASS_ARRAY,
-    comparatomic::Comparatomic,
-    fake_std::dynarray::DynArray,
-    meshable_arena::MeshableArena, 
-    mini_heap::MiniHeap,
-    one_way_mmap_heap::OneWayMmapHeap,
-    rng::Rng,
-    shuffle_vector::ShuffleVector,
-    MAX_SHUFFLE_VECTOR_LENGTH, MAX_SIZE, MAX_SMALL_SIZE,
+    class_array::CLASS_ARRAY, comparatomic::Comparatomic, fake_std::dynarray::DynArray,
+    meshable_arena::MeshableArena, mini_heap::MiniHeap, one_way_mmap_heap::OneWayMmapHeap,
+    rng::Rng, shuffle_vector::ShuffleVector, MAX_SHUFFLE_VECTOR_LENGTH, MAX_SIZE, MAX_SMALL_SIZE,
     NUM_BINS, PAGE_SIZE,
 };
 
@@ -116,8 +110,6 @@ impl GlobalHeap {
         //
     }
 
-        
-    
     fn alloc_miniheap(&mut self, page_count: usize) -> *mut MiniHeap {
         debug_assert!(page_count > 0, "should allocate at least 1 page");
 
@@ -163,7 +155,8 @@ impl SizeMap {
         Some(CLASS_ARRAY[idx] as usize)
     }
 
-    pub const fn class_index_maybe(&self, size: usize) -> Option<usize> {
+    #[allow(clippy::unused_self)]
+    const fn class_index_maybe(&self, size: usize) -> Option<usize> {
         // this is overlapping but allowed because it currently is the nicest way
         // to write `MAX_SMALL_SIZE+1..MAX_SIZE`
         #[allow(clippy::match_overlapping_arm)]

@@ -1,10 +1,6 @@
 use crate::one_way_mmap_heap::OneWayMmapHeap;
-use crate::{
-    fake_std::dynarray::DynArray,
-    mini_heap::MiniHeap,
-    PAGE_SIZE,
-};
 use crate::NUM_BINS;
+use crate::{fake_std::dynarray::DynArray, mini_heap::MiniHeap, PAGE_SIZE};
 use core::ptr::null_mut;
 pub type Page = [u8; PAGE_SIZE];
 
@@ -24,13 +20,14 @@ impl MeshableArena {
             mini_heaps: DynArray::<MiniHeap, NUM_BINS>::create(),
         }
     }
-        
 
     ///# Safety
     /// Unsafe
     ///
+    #[allow(clippy::redundant_closure_for_method_calls)]
     pub unsafe fn generate_mini_heap(&mut self, alloc: *mut (), bytes: usize) -> *mut MiniHeap {
         let mini_heaps = self.mini_heaps.as_mut_slice().as_mut().unwrap();
+
         let empty = mini_heaps.iter().position(|x| x.is_none());
         let size = core::mem::size_of::<*mut MiniHeap>();
         let new_heap = unsafe { OneWayMmapHeap.malloc(size) as *mut MiniHeap };
@@ -58,7 +55,7 @@ impl MeshableArena {
             .iter()
             .find(|x| {
                 if let Some(mh) = x {
-                        mh.as_ref().unwrap().arena_begin == ptr.cast()
+                    mh.as_ref().unwrap().arena_begin == ptr.cast()
                 } else {
                     false
                 }
@@ -66,7 +63,7 @@ impl MeshableArena {
             .map(|x| x as *const _ as *mut MiniHeap)
     }
 }
-    
+
 #[cfg(test)]
 mod tests {
     use super::*;
