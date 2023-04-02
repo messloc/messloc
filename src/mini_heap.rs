@@ -46,6 +46,6 @@ mod tests {
     #[test]
     pub fn test_dyn_array_of_mini_heaps() {
         let mut h = crate::fake_std::dynarray::DynArray::<MiniHeap, 32>::create();
-        let slice = unsafe { h.as_mut_slice() };
+        let _slice = h.as_mut_slice();
     }
 }

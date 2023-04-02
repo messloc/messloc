@@ -11,6 +11,7 @@
 #![feature(maybe_uninit_uninit_array)]
 #![feature(maybe_uninit_array_assume_init)]
 #![feature(if_let_guard)]
+#![feature(assert_matches)]
 #![recursion_limit = "256"]
 #![deny(clippy::pedantic)]
 

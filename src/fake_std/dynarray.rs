@@ -16,11 +16,11 @@ impl<T, const N: usize> DynArray<T, N> {
         }
     }
 
-    pub unsafe fn as_slice(&self) -> *const [Option<*mut T>] {
+    pub fn as_slice(&self) -> *const [Option<*mut T>] {
         core::ptr::slice_from_raw_parts(self.pointers.cast::<Option<*mut T>>(), N)
     }
 
-    pub unsafe fn as_mut_slice(&mut self) -> *mut [Option<*mut T>] {
+    pub fn as_mut_slice(&mut self) -> *mut [Option<*mut T>] {
         core::ptr::slice_from_raw_parts_mut(self.pointers.cast::<Option<*mut T>>(), N)
     }
 
@@ -115,6 +115,8 @@ impl<T, const N: usize> DynDeq<T, N> {
         }
     }
 
+    //TODO: Consider the weird case of pushing the same memory location to different slots, and
+    //whether we need to handle that or not
     pub fn push(&self, val: *mut T) -> Option<()> {
         if self.is_full() {
             None
@@ -141,9 +143,44 @@ impl<T, const N: usize> DynDeq<T, N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::assert_matches::assert_matches;
 
     #[test]
-    fn test_get_retrieves() {
+    fn create_a_dynarray_and_slice() {
+        let dynarray = DynArray::<u32, 4>::create();
+        let slice = unsafe {
+            core::ptr::slice_from_raw_parts(dynarray.pointers, 4)
+                .as_ref()
+                .unwrap()
+        };
+        assert_eq!(slice, &[None, None, None, None]);
+        let slice = unsafe { dynarray.as_slice().cast::<*const [Option<u32>; 4]>().read() };
+        unsafe { assert_eq!(*slice, [None, None, None, None]) };
+    }
+
+    #[test]
+    fn create_a_mutable_slice() {
+        let mut dynarray = DynArray::<u32, 4>::create();
+        let slice = unsafe {
+            dynarray
+                .as_mut_slice()
+                .cast::<*const [Option<u32>; 4]>()
+                .read()
+        };
+        unsafe { assert_eq!(*slice, [None, None, None, None]) };
+    }
+
+    #[test]
+    fn how_does_a_zst_fare() {
+        let dynarray = DynArray::<u32, 0>::create();
+        assert!(dynarray.pointers.is_null());
+        let dyndeq = DynDeq::<u32, 0>::create();
+        assert!(dyndeq.pointers.is_null());
+        assert_eq!(dyndeq.current, 0);
+    }
+
+    #[test]
+    fn get_retrieves() {
         unsafe {
             let mut slice = DynArray::<u32, 16>::create();
             let slice = slice.as_mut_slice().as_mut().unwrap();
@@ -156,5 +193,97 @@ mod tests {
             assert_eq!(*slice[1].unwrap(), 2);
             assert!(slice[2].is_none());
         }
+    }
+
+    #[test]
+    fn is_empty() {
+        let dynarray = DynArray::<u32, 4>::create();
+        assert!(dynarray.is_empty());
+    }
+
+    #[test]
+    fn writes_work() {
+        let mut dynarray = DynArray::<u32, 4>::create();
+        let slice = unsafe { dynarray.as_mut_slice().as_mut().unwrap() };
+        let d = unsafe { OneWayMmapHeap.malloc(core::mem::size_of::<u32>()) } as *mut u32;
+        unsafe { d.write(1u32) };
+        slice[0] = Some(d);
+        assert_matches!(slice[0], Some(c) if c == d);
+    }
+
+    #[test]
+    fn create_a_dyndeq_and_slice() {
+        let dynarray = DynDeq::<u32, 4>::create();
+        let slice = unsafe {
+            core::ptr::slice_from_raw_parts(dynarray.pointers, 4)
+                .as_ref()
+                .unwrap()
+        };
+        assert_eq!(slice, &[None, None, None, None]);
+        let slice = unsafe { dynarray.as_slice().cast::<*const [Option<u32>; 4]>().read() };
+        unsafe { assert_eq!(*slice, [None, None, None, None]) };
+        dbg!(dynarray.current, 0);
+    }
+
+    #[test]
+    fn create_a_mutable_slice_for_dyndeq() {
+        let dynarray = DynDeq::<u32, 4>::create();
+        let slice = unsafe {
+            dynarray
+                .as_mut_slice()
+                .cast::<*const [Option<u32>; 4]>()
+                .read()
+        };
+        unsafe { assert_eq!(*slice, [None, None, None, None]) };
+        dbg!(dynarray.current, 0);
+    }
+
+    #[test]
+    fn dyndeq_retrieves() {
+        unsafe {
+            let slice = DynDeq::<u32, 16>::create();
+            let slice = slice.as_mut_slice().as_mut().unwrap();
+            let heapyeine = OneWayMmapHeap.malloc(8) as *mut u32;
+            heapyeine.write(1u32);
+            slice[0] = Some(heapyeine);
+            let heapyzwei = OneWayMmapHeap.malloc(8) as *mut u32;
+            heapyzwei.write(2u32);
+            slice[1] = Some(heapyzwei);
+            assert_eq!(*slice[1].unwrap(), 2);
+            assert!(slice[2].is_none());
+        }
+    }
+
+    #[test]
+    fn dyndeq_is_empty() {
+        let dynarray = DynDeq::<u32, 4>::create();
+        assert!(dynarray.is_empty());
+        assert_eq!(dynarray.current, 0);
+    }
+
+    #[test]
+    fn dyndeq_writes_work() {
+        let dynarray = DynDeq::<u32, 4>::create();
+        let slice = unsafe { dynarray.as_mut_slice().as_mut().unwrap() };
+        let d = unsafe { OneWayMmapHeap.malloc(core::mem::size_of::<u32>()) } as *mut u32;
+        unsafe { d.write(1u32) };
+        slice[0] = Some(d);
+        assert_matches!(slice[0], Some(c) if c == d);
+        assert_eq!(dynarray.current, 0);
+    }
+
+    #[test]
+    fn dyndeq_pop_pops_and_increments_counter() {
+        let mut dyndeq = DynDeq::<u32, 4>::create();
+        let slice = unsafe { dyndeq.as_mut_slice().as_mut().unwrap() };
+        let d1 = unsafe { OneWayMmapHeap.malloc(core::mem::size_of::<u32>()) } as *mut u32;
+        unsafe { d1.write(1u32) };
+        let d2 = unsafe { OneWayMmapHeap.malloc(core::mem::size_of::<u32>()) } as *mut u32;
+        unsafe { d2.write(2u32) };
+        slice[0] = Some(d1);
+        slice[1] = Some(d2);
+        let poppy = dyndeq.pop().unwrap();
+        assert_matches!(poppy, Some(c) if c == d1);
+        assert_eq!(dyndeq.current, 1);
     }
 }

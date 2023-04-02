@@ -40,7 +40,7 @@ mod tests {
                 *sl = big_array[i] + i as u64;
             });
 
-            heap_slice.iter_mut().for_each(|(sl)| {
+            heap_slice.iter_mut().for_each(|sl| {
                 dbg!(sl);
             });
         }
