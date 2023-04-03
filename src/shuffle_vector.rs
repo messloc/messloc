@@ -28,7 +28,7 @@ impl<const N: usize> ShuffleVector<N> {
             }
     }
 
-    pub fn insert(&self, value: *mut MiniHeap) {
+    pub fn insert(&mut self, value: *mut MiniHeap) {
         if self.mini_heaps.push(value).is_none() {
             todo!()
         } else {

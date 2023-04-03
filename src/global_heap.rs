@@ -81,12 +81,9 @@ impl GlobalHeap {
             let mh = self.arena.get_mini_heap(ptr).unwrap();
             match shuffle_vectors.get(size_class) {
                 Some(Some(sv)) if let Some(v) = sv.as_mut() => {
-                    let mini_heaps = v.mini_heaps.as_mut_slice().as_mut().unwrap();
-                    let pos = mini_heaps.iter().position(|mh| mh.is_none()).unwrap();
-
-                    let _ = core::mem::replace(&mut mini_heaps[pos], Some(mh));
+                    v.mini_heaps.push(mh);
                 }
-                _ => {}
+                _ => todo!(),
             }
         } else {
             unreachable!()
